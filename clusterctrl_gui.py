@@ -5,11 +5,11 @@ clusterctrl_gui.py
 A PyQt5 GUI for controlling ClusterHAT/ClusterCTRL boards AND monitoring system
 health (CPU/RAM/network/temperature) locally and on each Pi node via SSH.
 
-This updated version includes:
+This version includes:
   - Dropdown for selecting any supported board version (v2.x, v1.x, Single, Triple, A+6).
   - Fan On/Off buttons (maps to `clusterctrl fan on` / `clusterctrl fan off`).
   - Per-node On/Off buttons (e.g., “P1 On” / “P1 Off”, etc.) plus “All On” / “All Off”.
-  - Retains “Update from GitHub” in the File menu.
+  - “Update from GitHub” only in the File menu, with safe handling of local changes.
   - System Health tab unchanged.
 """
 
@@ -64,6 +64,23 @@ def parse_clusterctrl_status():
         key, val = line.split(":", 1)
         status[key.strip()] = val.strip()
     return status, None
+
+def git_has_local_changes(repo_dir):
+    """
+    Returns True if 'git status --porcelain' is non-empty, indicating local changes.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        return bool(completed.stdout.strip())
+    except subprocess.CalledProcessError:
+        return False
 
 # --------------------------------------------------
 # BoardDefinition classes
@@ -233,7 +250,6 @@ class ClusterCtrlGUI(QMainWindow):
         self.fan_on_btn = QPushButton("Fan ON")
         self.fan_off_btn = QPushButton("Fan OFF")
         self.refresh_btn = QPushButton("Refresh Status")
-        self.update_btn = QPushButton("Update from GitHub")
         self.status_label = QLabel("Status: Unknown")
 
         # --- Health‐tab widgets (unchanged) ---
@@ -300,10 +316,9 @@ class ClusterCtrlGUI(QMainWindow):
         extras_group.setLayout(extras_layout)
         layout.addWidget(extras_group)
 
-        # Row 5: Refresh + Update
+        # Row 5: Refresh
         hb_refresh = QHBoxLayout()
         hb_refresh.addWidget(self.refresh_btn)
-        hb_refresh.addWidget(self.update_btn)
         hb_refresh.addStretch()
         layout.addLayout(hb_refresh)
 
@@ -327,7 +342,6 @@ class ClusterCtrlGUI(QMainWindow):
         self.fan_on_btn.clicked.connect(partial(self._run_extra, "fan", "on"))
         self.fan_off_btn.clicked.connect(partial(self._run_extra, "fan", "off"))
         self.refresh_btn.clicked.connect(self._refresh_status)
-        self.update_btn.clicked.connect(self._perform_update)
 
     # --------------------------------------------------
     # Build Health Tab UI (unchanged)
@@ -429,8 +443,6 @@ class ClusterCtrlGUI(QMainWindow):
             layout.addWidget(btn_on, row, col)
             layout.addWidget(btn_off, row, col + 1)
 
-        # “All On” / “All Off” already added below node group
-
     # --------------------------------------------------
     # Turn a single node on
     # --------------------------------------------------
@@ -479,7 +491,6 @@ class ClusterCtrlGUI(QMainWindow):
     # Toggle extras (hub/led/alert/wp/fan)
     # --------------------------------------------------
     def _run_extra(self, extra, state):
-        # Validate support
         support_map = {
             "hub": self.current_board_def.supports_hub_led,
             "led": self.current_board_def.supports_hub_led,
@@ -506,7 +517,6 @@ class ClusterCtrlGUI(QMainWindow):
             QMessageBox.critical(self, "Error", err)
             return
 
-        # Build summary line
         node_states = []
         for nl in self.current_board_def.valid_node_labels():
             val = status.get(nl, "0")
@@ -524,7 +534,6 @@ class ClusterCtrlGUI(QMainWindow):
         if self.current_board_def.supports_wp:
             wp_val = status.get("wp", "0")
             extras_states.append(f"WP={'ON' if wp_val=='1' else 'OFF'}")
-        # Fan state
         fan_val = status.get("fan", None)
         if fan_val is not None:
             extras_states.append(f"FAN={'ON' if fan_val=='1' else 'OFF'}")
@@ -617,10 +626,12 @@ class ClusterCtrlGUI(QMainWindow):
         self._update_remote_stats()
 
     # --------------------------------------------------
-    # Perform a `git pull` in the install directory
+    # Perform a `git pull` in the install directory, safely handling local changes
     # --------------------------------------------------
     def _perform_update(self):
         repo_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # Ensure this is a git repo
         if not os.path.isdir(os.path.join(repo_dir, ".git")):
             QMessageBox.warning(
                 self, "Update Failed",
@@ -628,6 +639,28 @@ class ClusterCtrlGUI(QMainWindow):
             )
             return
 
+        # Check for local changes
+        if git_has_local_changes(repo_dir):
+            reply = QMessageBox.question(
+                self, "Local Changes Detected",
+                "You have uncommitted changes in the repository.\n"
+                "Updating will discard them.\n"
+                "Do you want to proceed and overwrite local changes?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+            # Discard local changes
+            try:
+                subprocess.run(["git", "reset", "--hard"], cwd=repo_dir, check=True)
+            except subprocess.CalledProcessError as e:
+                QMessageBox.critical(
+                    self, "Reset Failed",
+                    f"Failed to discard local changes:\n{e.stderr.strip()}"
+                )
+                return
+
+        # Now pull
         try:
             proc = subprocess.run(
                 ["git", "pull"],
