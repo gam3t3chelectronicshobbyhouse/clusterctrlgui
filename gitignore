@@ -1,0 +1,63 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE and editor directories/files
+.idea/
+.vscode/
+*.swp
+*~
+
+# PyCharm
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# macOS
+.DS_Store
+
+# Logs and databases
+*.log
+*.sqlite3
+
+# Git ignore for icons or built artifacts (optional if icons are tracked)
+# /icons/
+
+# Installer scripts
+install.sh
+uninstall.sh
+
+# GitHub-specific
+.github/
