@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # install.sh
-# Installs ClusterCTRL GUI & System Health Monitor, and sets up SSH keys for Pi nodes.
+# Installs ClusterCTRL GUI & System Health Monitor, sets up SSH keys, strips icon profiles,
+# and creates a working desktop launcher in ~/.local/share/applications.
 #
 
 set -e
@@ -9,7 +10,8 @@ set -e
 # 1. Variables
 REPO_URL="https://github.com/gam3t3chelectronicshobbyhouse/clusterctrlgui.git"
 INSTALL_DIR="$HOME/clusterctrlgui"
-DESKTOP_FILE="/usr/share/applications/clusterctrlgui.desktop"
+LOCAL_APPS_DIR="$HOME/.local/share/applications"
+DESKTOP_FILE="$LOCAL_APPS_DIR/clusterctrlgui.desktop"
 SSH_KEY="$HOME/.ssh/id_rsa"
 SSH_PUB="$HOME/.ssh/id_rsa.pub"
 NODE_HOSTS=( "pi@p1.local" "pi@p2.local" "pi@p3.local" "pi@p4.local" "pi@p5.local" "pi@p6.local" )
@@ -54,7 +56,6 @@ echo
 echo "=== Distributing SSH public key to Pi nodes ==="
 for HOST in "${NODE_HOSTS[@]}"; do
   echo -n "Attempting to copy key to $HOST... "
-  # Try ssh-copy-id; ignore errors if host is unreachable
   if ssh-copy-id -i "$SSH_PUB" "$HOST" < /dev/null 2>/dev/null; then
     echo "Success."
   else
@@ -64,34 +65,48 @@ done
 echo "=== SSH setup complete ==="
 echo
 
-# 7. Make main script executable
+# 7. Strip ICC profiles from icons (to suppress libpng iCCP warnings)
+if command -v mogrify >/dev/null 2>&1; then
+  echo "Stripping ICC profiles from PNG icons with mogrify..."
+  mogrify -strip "$INSTALL_DIR/icons/"*.png
+elif command -v pngcrush >/dev/null 2>&1; then
+  echo "Stripping ICC profiles from PNG icons with pngcrush..."
+  for f in "$INSTALL_DIR/icons/"*.png; do
+    pngcrush -ow -rem allb -reduce "$f"
+  done
+else
+  echo "Neither mogrify nor pngcrush installed—skipping icon stripping. You may still see libpng warnings."
+fi
+
+# 8. Make main script executable
 echo "Making clusterctrl_gui.py executable..."
 chmod +x "$INSTALL_DIR/clusterctrl_gui.py"
 
-# 8. Create desktop entry
+# 9. Create desktop entry in ~/.local/share/applications
 echo "Creating desktop launcher at $DESKTOP_FILE..."
-if [ -f "$DESKTOP_FILE" ]; then
-  sudo rm "$DESKTOP_FILE"
-fi
+mkdir -p "$LOCAL_APPS_DIR"
 
-ICON_PATH="$INSTALL_DIR/icons/icon_green.png"
-sudo bash -c "cat > $DESKTOP_FILE << EOF
+cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Name=ClusterCTRL GUI
 Comment=Control and monitor your Pi cluster
-Exec=$INSTALL_DIR/clusterctrl_gui.py
-Icon=$ICON_PATH
+Exec=python3 $INSTALL_DIR/clusterctrl_gui.py
+Icon=$INSTALL_DIR/icons/icon_green.png
 Terminal=false
 Type=Application
 Categories=Utility;
-EOF"
+EOF
 
-# 9. Inform user
+chmod +x "$DESKTOP_FILE"
+
+# 10. Inform user
 echo
 echo "Installation complete!"
-echo "SSH keys have been generated (if not present) and distributed to p1.local … p6.local."
-echo "If any node was unreachable, you can still set up SSH manually or adjust in Settings."
 echo
-echo "You can launch the GUI from your application menu (search for 'ClusterCTRL GUI')"
-echo "Or run directly:"
-echo "  $INSTALL_DIR/clusterctrl_gui.py"
+echo "• If you still see 'libpng warning: iCCP…' messages, ensure mogrify or pngcrush is installed."
+echo "• A desktop shortcut should now be available in your application menu as “ClusterCTRL GUI.”"
+echo "• If it doesn’t appear immediately, try logging out/in or running:"
+echo "      update-desktop-database ~/.local/share/applications"
+echo
+echo "You can also launch the GUI directly via:"
+echo "  python3 $INSTALL_DIR/clusterctrl_gui.py"
