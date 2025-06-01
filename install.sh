@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # install.sh
-# Installs ClusterCTRL GUI & System Health Monitor, sets up SSH keys,
-# powers on all Pi Zero nodes, distributes SSH keys, then powers off each node individually.
+# Installs ClusterCTRL GUI & System Health Monitor, sets up SSH keys by powering on each Pi Zero node
+# (one at a time), waiting up to 120 seconds for SSH, copying the key, then powering it off.
+# Ensures the fan is turned on immediately and off at the end.
 #
 
 set -e
@@ -14,10 +15,9 @@ LOCAL_APPS_DIR="$HOME/.local/share/applications"
 DESKTOP_FILE="$LOCAL_APPS_DIR/clusterctrlgui.desktop"
 SSH_KEY="$HOME/.ssh/id_rsa"
 SSH_PUB="$HOME/.ssh/id_rsa.pub"
-# Node labels correspond to Pi Zero ports: p1 through p6 (or fewer if your board has fewer)
-NODE_LABELS=( "p1" "p2" "p3" "p4" "p5" "p6" )
+NODE_LABELS=( "p1" "p2" "p3" "p4" )  # Valid on this board
 SSH_TIMEOUT=5       # seconds per SSH attempt
-MAX_WAIT=120        # maximum seconds to wait for each host to come online
+MAX_WAIT=120        # maximum seconds to wait for each host to become reachable
 SLEEP_INTERVAL=5    # seconds between attempts
 
 echo "=== Installing ClusterCTRL GUI ==="
@@ -55,21 +55,31 @@ else
   echo "SSH key already exists at $SSH_KEY. Skipping generation."
 fi
 
-# 6. Power ON all Pi Zero nodes
+# 6. Turn ON fan immediately
 echo
-echo "=== Powering ON all Pi Zero nodes ==="
-clusterctrl on all || echo "Warning: 'clusterctrl on all' may have failed. Check your ClusterCTRL board."
-echo "Waiting for nodes to boot (up to $MAX_WAIT seconds each)..."
-echo
+echo "=== Turning ON fan ==="
+clusterctrl fan on || echo "Warning: 'clusterctrl fan on' may have failed."
 
-# 7. Wait for each node to become reachable, distribute SSH key, then power off individually
+# 7. For each Pi node: power on, wait for SSH, copy key, then power off
+echo
+echo "=== Distributing SSH keys node by node ==="
 for LABEL in "${NODE_LABELS[@]}"; do
   HOST="pi@${LABEL}.local"
-  echo -n "Waiting for $HOST to be SSH-accessible ... "
+
+  echo
+  echo "— Processing $LABEL —"
+  echo "Powering ON $LABEL..."
+  if clusterctrl on "$LABEL"; then
+    echo "Waiting up to $MAX_WAIT seconds for $HOST to become SSH-accessible..."
+  else
+    echo "Warning: 'clusterctrl on $LABEL' failed. Skipping $LABEL."
+    continue
+  fi
+
   elapsed=0
   while [ $elapsed -lt $MAX_WAIT ]; do
     if ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=$SSH_TIMEOUT "$HOST" "echo up" >/dev/null 2>&1; then
-      echo "reachable"
+      echo "  → $HOST is reachable via SSH."
       break
     else
       echo -n "."
@@ -80,33 +90,28 @@ for LABEL in "${NODE_LABELS[@]}"; do
 
   if [ $elapsed -ge $MAX_WAIT ]; then
     echo
-    echo "  → $HOST did not respond within $MAX_WAIT seconds. Skipping key copy and leaving it powered on."
+    echo "  → Timeout ($MAX_WAIT seconds). $HOST did not respond. Leaving $LABEL powered on for manual setup."
     continue
   fi
 
-  # 7a. Copy SSH public key
-  echo -n "Copying SSH key to $HOST ... "
+  echo "Copying SSH key to $HOST..."
   if ssh-copy-id -i "$SSH_PUB" "$HOST" < /dev/null 2>/dev/null; then
-    echo "success"
+    echo "  → SSH key copied successfully to $HOST."
   else
-    echo "failed (credentials or host issue)."
-    echo "  → Leaves $LABEL powered on for manual setup."
-    continue
+    echo "  → Failed to copy SSH key to $HOST. Please set up manually."
   fi
 
-  # 7b. Power off this node now that key is copied
-  echo -n "Powering OFF $LABEL ... "
+  echo "Powering OFF $LABEL..."
   if clusterctrl off "$LABEL"; then
-    echo "done"
+    echo "  → $LABEL powered off."
   else
-    echo "failed (you may need to power off manually)."
+    echo "  → Warning: 'clusterctrl off $LABEL' failed. $LABEL may still be on."
   fi
 done
 
 echo
 echo "=== SSH key distribution complete ==="
-echo "Any node that failed to be reached remains powered on. Please configure manually if needed."
-echo
+echo "Any node that timed out remains powered on. Configure manually if needed."
 
 # 8. Strip ICC profiles from icons (to suppress libpng warnings)
 if command -v mogrify >/dev/null 2>&1; then
@@ -121,11 +126,17 @@ else
   echo "Neither mogrify nor pngcrush installed—skipping icon stripping."
 fi
 
-# 9. Make main script executable
+# 9. Turn OFF fan
+echo
+echo "=== Turning OFF fan ==="
+clusterctrl fan off || echo "Warning: 'clusterctrl fan off' may have failed."
+
+# 10. Make main script executable
+echo
 echo "Making clusterctrl_gui.py executable..."
 chmod +x "$INSTALL_DIR/clusterctrl_gui.py"
 
-# 10. Create desktop entry in ~/.local/share/applications
+# 11. Create desktop entry in ~/.local/share/applications
 echo "Creating desktop launcher at $DESKTOP_FILE..."
 mkdir -p "$LOCAL_APPS_DIR"
 
@@ -142,14 +153,15 @@ EOF
 
 chmod +x "$DESKTOP_FILE"
 
-# 11. Inform user
+# 12. Inform user
 echo
 echo "Installation complete!"
 echo
-echo "• Each Pi Zero node was powered on, SSH key copied if reachable, then powered off individually."
-echo "  If any node was unreachable, it remains powered on for manual troubleshooting."
+echo "• SSH keys were distributed individually to each Pi Zero (p1–p4)."
+echo "  If any node did not respond, it remains powered on for manual setup."
+echo "• The fan was turned on early and turned off at the end."
 echo "• A desktop shortcut is available as “ClusterCTRL GUI.”"
-echo "  If it doesn’t appear, try logging out/in or running:"
+echo "  If it doesn’t appear, run:"
 echo "      update-desktop-database ~/.local/share/applications"
 echo
 echo "To launch the GUI directly, run:"
