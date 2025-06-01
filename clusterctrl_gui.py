@@ -5,40 +5,41 @@ clusterctrl_gui.py
 A PyQt5 GUI for controlling ClusterHAT/ClusterCTRL boards AND monitoring system
 health (CPU/RAM/network/temperature) locally and on each Pi node via SSH.
 
-This version includes:
-  - Dropdown for selecting any supported board version (v2.x, v1.x, Single, Triple, A+6).
-  - Single toggle button per node with an LED icon above (green/red) indicating on/off.
-  - "All On" / "All Off" buttons.
-  - Fan On/Off and other extras.
-  - "Update from GitHub" only in the File menu.
-  - Footer with "Created by Gam3t3ch Electronics 2025" (linking to http://gam3t3ch.com) at bottom-left,
-    and a "Donate" button (linking to PayPalMe) at bottom-right.
-  - A "Help" tab with usage instructions and troubleshooting.
-  - A "Settings" tab to configure SSH credentials, refresh interval, theme, notifications, etc.
-  - Improved status summary visually.
-
-Requirements:
-  - PyQt5 (`sudo apt install python3-pyqt5`)
-  - psutil (`pip3 install psutil`)
-  - Passwordless SSH set up to each node (e.g., pi@p1.local, pi@p2.local, …), or configure SSH in Settings.
-  - The `vcgencmd` utility available on all Raspberry Pis (standard on Raspberry Pi OS).
-  - `clusterctrl` utility installed and in `$PATH` on the controller Pi.
+Features:
+  - Dropdown to select board version (ClusterHAT v2.x, v1.x, ClusterCTRL Single/Triple/A+6).
+  - Single toggle button per node with an LED icon above (green/red).
+  - "All On" / "All Off" controls.
+  - Extras: Hub, LED, Alert, WP, Fan on/off.
+  - File → "Update from GitHub" with safe local‐changes handling.
+  - Tabbed interface:
+      • Control
+      • System Health
+      • Help
+      • Settings (where SSH credentials & key‐distribution live)
+  - Settings:
+      • Pick CNAT or CBRIDGE mode (affects default hostnames/IPs for Pi Zeros).
+      • Configure SSH user@host & keyfile per node (p1…p4).
+      • Button to "Distribute SSH Keys" (powers on each node, waits for SSH, copies key, powers off).
+      • Refresh interval, theme, icon size, notifications, etc.
+  - Strips ICC profiles from icons at startup if needed (avoids libpng warnings).
 """
 
 import sys
-import subprocess
-import shlex
 import os
 import json
+import time
+import subprocess
+import shlex
 import psutil
 from functools import partial
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QPushButton, QComboBox, QMessageBox, QGroupBox, QTabWidget, QAction,
-    QMenuBar, QTextEdit, QSpacerItem, QSizePolicy, QLineEdit, QFileDialog,
-    QSpinBox, QCheckBox
+    QLabel, QPushButton, QComboBox, QMessageBox, QGroupBox, QTabWidget,
+    QAction, QMenuBar, QTextEdit, QSpacerItem, QSizePolicy, QLineEdit,
+    QFileDialog, QSpinBox, QCheckBox, QInputDialog
 )
-from PyQt5.QtGui import QIcon, QPixmap, QDesktopServices
+from PyQt5.QtGui import QPixmap, QDesktopServices
 from PyQt5.QtCore import Qt, QTimer, QUrl
 
 # --------------------------------------------------
@@ -47,7 +48,7 @@ from PyQt5.QtCore import Qt, QTimer, QUrl
 
 def run_clusterctrl_command(args_list):
     """
-    Run a `clusterctrl` command, return (return_code, stdout, stderr).
+    Run a `clusterctrl` command (e.g. ["on", "p1"]), returning (return_code, stdout, stderr).
     """
     try:
         completed = subprocess.run(
@@ -81,7 +82,7 @@ def parse_clusterctrl_status():
 
 def git_has_local_changes(repo_dir):
     """
-    Returns True if 'git status --porcelain' is non-empty, indicating local changes.
+    Returns True if `git status --porcelain` is non-empty, indicating local changes.
     """
     try:
         completed = subprocess.run(
@@ -110,17 +111,9 @@ class BoardDefinition:
     @classmethod
     def valid_node_labels(cls):
         """
-        Returns a list like ["p1","p2", ... up to supports_nodes].
+        Returns list of node labels, e.g. ["p1","p2", … up to supports_nodes].
         """
         return [f"p{i}" for i in range(1, cls.supports_nodes + 1)]
-
-    @classmethod
-    def command_power_on(cls, nodes):
-        return ["on"] + nodes
-
-    @classmethod
-    def command_power_off(cls, nodes):
-        return ["off"] + nodes
 
     @classmethod
     def command_all_on(cls):
@@ -205,7 +198,6 @@ class ClusterCTRLA6(BoardDefinition):
     supports_alert = True
     supports_wp = False
 
-# List of all supported board classes for the dropdown
 ALL_BOARDS = [
     ClusterHATv2,
     ClusterHATv1,
@@ -231,7 +223,7 @@ class ClusterCtrlGUI(QMainWindow):
         # Current board definition
         self.current_board_def = None
 
-        # --- Menubar & “File” menu ---
+        # --- Menubar & "File" menu ---
         menubar = QMenuBar(self)
         file_menu = menubar.addMenu("File")
 
@@ -246,7 +238,7 @@ class ClusterCtrlGUI(QMainWindow):
 
         self.setMenuBar(menubar)
 
-        # --- Central Widget: tabs + footer ---
+        # --- Central Widget (tabs + footer) ---
         main_widget = QWidget()
         main_layout = QVBoxLayout()
         main_widget.setLayout(main_layout)
@@ -264,7 +256,7 @@ class ClusterCtrlGUI(QMainWindow):
         self.tabs.addTab(self.settings_tab, "Settings")
         main_layout.addWidget(self.tabs)
 
-        # Footer: left label and right donate button
+        # Footer: left label + right donate button
         footer_layout = QHBoxLayout()
         self.footer_label = QLabel(
             '<a href="http://gam3t3ch.com">Created by Gam3t3ch Electronics 2025</a>'
@@ -278,10 +270,9 @@ class ClusterCtrlGUI(QMainWindow):
             QUrl("https://www.paypal.com/paypalme/gam3t3ch")
         ))
         footer_layout.addWidget(self.donate_btn, alignment=Qt.AlignRight)
-
         main_layout.addLayout(footer_layout)
 
-        # --- Load LED icons (resized according to settings) ---
+        # --- Load LED icons (scaled by saved setting) ---
         size = self.settings.get("led_icon_size", 16)
         self.icon_green = QPixmap("icons/icon_green.png").scaled(
             size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
@@ -292,7 +283,7 @@ class ClusterCtrlGUI(QMainWindow):
 
         # --- Control‐tab widgets ---
         self.board_combo = QComboBox()
-        self.node_widgets = {}       # {"p1": (icon_label, toggle_btn), ...}
+        self.node_widgets = {}  # {"p1": (icon_label, toggle_btn), ...}
         self.all_on_btn = QPushButton("All On")
         self.all_off_btn = QPushButton("All Off")
         self.hub_on_btn = QPushButton("Hub ON")
@@ -317,22 +308,22 @@ class ClusterCtrlGUI(QMainWindow):
         self.remote_stat_labels = {}
         self.refresh_health_btn = QPushButton("Refresh Health Stats")
 
-        # --- Help‐tab and Settings‐tab to build after ---
+        # Build each tab
         self._build_control_tab()
         self._build_health_tab()
         self._build_help_tab()
         self._build_settings_tab()
 
-        # Populate dropdown with all supported boards
+        # Populate board dropdown
         for bd in ALL_BOARDS:
             self.board_combo.addItem(bd.name, bd)
 
-        # Set initial board selection
+        # Select first board by default
         if self.board_combo.count() > 0:
             self.board_combo.setCurrentIndex(0)
             self._on_board_changed(0)
 
-        # Apply theme (if dark)
+        # Apply dark theme if set
         if self.settings.get("theme", "light") == "dark":
             self._apply_dark_theme()
 
@@ -346,7 +337,8 @@ class ClusterCtrlGUI(QMainWindow):
 
         # Default structure
         default = {
-            "ssh": {},
+            "mode": "cnat",                   # default to CNAT
+            "ssh": {},                        # SSH creds per node
             "refresh_interval": 5,
             "theme": "light",
             "led_icon_size": 16,
@@ -354,7 +346,7 @@ class ClusterCtrlGUI(QMainWindow):
             "cpu_alert_threshold": 80,
             "email_alert": ""
         }
-        # SSH defaults for each possible node across all boards
+        # For each possible node label, provide defaults
         for bd in ALL_BOARDS:
             for node_label in bd.valid_node_labels():
                 default["ssh"].setdefault(node_label, {
@@ -365,14 +357,14 @@ class ClusterCtrlGUI(QMainWindow):
         try:
             with open(self.config_path, "r") as f:
                 loaded = json.load(f)
-            # Merge loaded over default
+            # Merge top‐level keys
             for k, v in default.items():
                 if k not in loaded:
                     loaded[k] = v
             # Ensure all SSH entries exist
-            for node_label, creds in default["ssh"].items():
-                if node_label not in loaded["ssh"]:
-                    loaded["ssh"][node_label] = creds
+            for nl, creds in default["ssh"].items():
+                if nl not in loaded["ssh"]:
+                    loaded["ssh"][nl] = creds
             return loaded
         except Exception:
             return default
@@ -457,7 +449,7 @@ class ClusterCtrlGUI(QMainWindow):
         self.refresh_btn.clicked.connect(self._refresh_status)
 
     # --------------------------------------------------
-    # Build Health Tab UI
+    # Build Health Tab UI (unchanged)
     # --------------------------------------------------
     def _build_health_tab(self):
         layout = QVBoxLayout()
@@ -484,7 +476,7 @@ class ClusterCtrlGUI(QMainWindow):
 
         self.health_tab.setLayout(layout)
 
-        # Auto‐refresh local stats at configured interval
+        # Auto-refresh local stats at configured interval
         self.health_timer = QTimer()
         self.health_timer.setInterval(self.settings.get("refresh_interval", 5) * 1000)
         self.health_timer.timeout.connect(self._update_local_stats)
@@ -493,7 +485,7 @@ class ClusterCtrlGUI(QMainWindow):
         self.refresh_health_btn.clicked.connect(self._refresh_both_local_and_remote)
 
     # --------------------------------------------------
-    # Build Help Tab UI
+    # Build Help Tab UI (unchanged)
     # --------------------------------------------------
     def _build_help_tab(self):
         layout = QVBoxLayout()
@@ -519,40 +511,31 @@ class ClusterCtrlGUI(QMainWindow):
       <li><em>Fan ON/OFF</em></li>
     </ul>
   </li>
-  <li>Click <em>Refresh Status</em> to update icons and the status summary below.</li>
+  <li>Click <em>Refresh Status</em> to update icons and the status summary.</li>
 </ul>
 
 <p><strong>System Health Tab:</strong></p>
 <ul>
-  <li>Shows CPU, RAM, Temperature, and Network I/O of the controller Pi (auto-refresh every N seconds).</li>
+  <li>Shows CPU, RAM, Temperature, and Network I/O of the controller Pi (auto-refresh every N sec).</li>
   <li>Shows CPU, RAM, Temp, and Network I/O of each node (via SSH).</li>
-  <li>Ensure SSH credentials are correct in <strong>Settings</strong> (username, host, keyfile).</li>
+  <li>Ensure SSH credentials are correct in <strong>Settings → SSH Credentials</strong>.</li>
 </ul>
 
-<p><strong>Help & Troubleshooting:</strong></p>
+<p><strong>Settings Tab:</strong></p>
 <ul>
-  <li><strong>Problems Connecting to Nodes:</strong>
-    <ul>
-      <li>Test SSH under <strong>Settings → SSH Credentials</strong>.</li>
-      <li>Use <code>ssh -i &lt;keyfile&gt; &lt;user@host&gt; echo OK</code> from a terminal.</li>
-    </ul>
+  <li>Select <em>CNAT</em> or <em>CBRIDGE</em> mode (affects default IP/hostname for each Pi Zero).</li>
+  <li>Configure SSH <strong>Username@Host</strong> and <strong>Keyfile</strong> for each node (p1–p4).  
+      You can override the defaults if you’ve changed your Pi’s hostname or IP or login user.</li>
+  <li>Click <strong>Distribute SSH Keys</strong> to automatically:
+    <ol>
+      <li>Power ON each node one at a time</li>
+      <li>Wait up to 120 s for it to become reachable via SSH</li>
+      <li>Prompt you for that node’s password (even if you changed it)</li>
+      <li>Copy your public key via sshpass → ssh-copy-id</li>
+      <li>Power OFF the node and move to the next</li>
+    </ol>
   </li>
-  <li><strong>clusterctrl Not Found:</strong>
-    <ul>
-      <li>Ensure <code>clusterctrl</code> is installed: <code>which clusterctrl</code>.</li>
-      <li>Install via: <code>sudo apt install clusterhat-ctrl</code> or use the official image.</li>
-    </ul>
-  </li>
-  <li><strong>GPU Temperature Not Available:</strong>
-    <ul>
-      <li>Ensure <code>vcgencmd</code> exists: <code>which vcgencmd</code>.</li>
-    </ul>
-  </li>
-  <li><strong>Update Fails:</strong>
-    <ul>
-      <li>Use <em>File → Update from GitHub</em>. If local changes exist, you will be prompted to overwrite.</li>
-    </ul>
-  </li>
+  <li>Adjust auto-refresh interval, theme (light/dark), LED icon size, and other options.</li>
 </ul>
 """
         text_edit = QTextEdit()
@@ -562,12 +545,22 @@ class ClusterCtrlGUI(QMainWindow):
         self.help_tab.setLayout(layout)
 
     # --------------------------------------------------
-    # Build Settings Tab UI
+    # Build Settings Tab UI (modified)  
     # --------------------------------------------------
     def _build_settings_tab(self):
         layout = QVBoxLayout()
 
-        # SSH Credentials section
+        # 1. CNAT / CBRIDGE Mode selection
+        mode_row = QHBoxLayout()
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["cnat", "cbridge"])
+        self.mode_combo.setCurrentText(self.settings.get("mode", "cnat"))
+        mode_row.addWidget(QLabel("Network Mode:"))
+        mode_row.addWidget(self.mode_combo)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
+
+        # 2. SSH Credentials for each node
         ssh_group = QGroupBox("SSH Credentials")
         ssh_layout = QVBoxLayout()
         ssh_group.setLayout(ssh_layout)
@@ -579,21 +572,26 @@ class ClusterCtrlGUI(QMainWindow):
             user_host_edit = QLineEdit(self.settings["ssh"][node_label]["user_host"])
             keyfile_edit = QLineEdit(self.settings["ssh"][node_label]["keyfile"])
             browse_btn = QPushButton("Browse…")
-            test_btn = QPushButton("Test SSH")
 
             browse_btn.clicked.connect(lambda _, nl=node_label: self._browse_keyfile(nl))
-            test_btn.clicked.connect(lambda _, nl=node_label: self._test_ssh(nl))
 
             row.addWidget(QLabel(node_label.upper() + ":"))
             row.addWidget(user_host_edit)
             row.addWidget(keyfile_edit)
             row.addWidget(browse_btn)
-            row.addWidget(test_btn)
             ssh_layout.addLayout(row)
 
             self.ssh_fields[node_label] = (user_host_edit, keyfile_edit)
 
-        # Refresh interval
+        # 3. Distribute SSH Keys button
+        dist_row = QHBoxLayout()
+        self.dist_btn = QPushButton("Distribute SSH Keys")
+        self.dist_btn.clicked.connect(self._distribute_ssh_keys)
+        dist_row.addStretch()
+        dist_row.addWidget(self.dist_btn)
+        layout.addLayout(dist_row)
+
+        # 4. Refresh interval
         refresh_row = QHBoxLayout()
         self.refresh_spin = QSpinBox()
         self.refresh_spin.setRange(1, 60)
@@ -603,7 +601,7 @@ class ClusterCtrlGUI(QMainWindow):
         refresh_row.addStretch()
         layout.addLayout(refresh_row)
 
-        # Theme selection
+        # 5. Theme selection
         theme_row = QHBoxLayout()
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["light", "dark"])
@@ -613,7 +611,7 @@ class ClusterCtrlGUI(QMainWindow):
         theme_row.addStretch()
         layout.addLayout(theme_row)
 
-        # LED icon size
+        # 6. LED icon size
         icon_row = QHBoxLayout()
         self.icon_spin = QSpinBox()
         self.icon_spin.setRange(8, 32)
@@ -623,7 +621,7 @@ class ClusterCtrlGUI(QMainWindow):
         icon_row.addStretch()
         layout.addLayout(icon_row)
 
-        # Play sound on node toggle
+        # 7. Play sound on node toggle
         sound_row = QHBoxLayout()
         self.sound_checkbox = QCheckBox("Play sound on node ON/OFF")
         self.sound_checkbox.setChecked(self.settings.get("play_sound_on_off", False))
@@ -631,7 +629,7 @@ class ClusterCtrlGUI(QMainWindow):
         sound_row.addStretch()
         layout.addLayout(sound_row)
 
-        # CPU alert threshold
+        # 8. CPU alert threshold
         cpu_row = QHBoxLayout()
         self.cpu_spin = QSpinBox()
         self.cpu_spin.setRange(10, 100)
@@ -641,20 +639,18 @@ class ClusterCtrlGUI(QMainWindow):
         cpu_row.addStretch()
         layout.addLayout(cpu_row)
 
-        # Email alert
+        # 9. Email alert
         email_row = QHBoxLayout()
         self.email_edit = QLineEdit(self.settings.get("email_alert", ""))
         self.test_email_btn = QPushButton("Test Email")
-        # For simplicity, Test Email is a placeholder—not implemented
-        self.test_email_btn.clicked.connect(lambda: QMessageBox.information(
-            self, "Test Email", "Email test not implemented."
-        ))
+        # Placeholder for actual email testing logic
+        self.test_email_btn.clicked.connect(lambda: QMessageBox.information(self, "Test Email", "Email test not implemented."))
         email_row.addWidget(QLabel("Email for alerts:"))
         email_row.addWidget(self.email_edit)
         email_row.addWidget(self.test_email_btn)
         layout.addLayout(email_row)
 
-        # Spacer and Save/Cancel
+        # 10. Spacer and Save/Cancel
         layout.addStretch()
         btn_row = QHBoxLayout()
         save_btn = QPushButton("Save")
@@ -680,33 +676,18 @@ class ClusterCtrlGUI(QMainWindow):
             self.ssh_fields[node_label][1].setText(path)
 
     # --------------------------------------------------
-    # Test SSH connection for a given node
-    # --------------------------------------------------
-    def _test_ssh(self, node_label):
-        user_host = self.ssh_fields[node_label][0].text().strip()
-        keyfile = self.ssh_fields[node_label][1].text().strip()
-        if not user_host or not keyfile:
-            QMessageBox.warning(self, "SSH Test", "Fill in both user@host and keyfile.")
-            return
-        try:
-            proc = subprocess.run(
-                ["ssh", "-i", keyfile, "-o", "BatchMode=yes", "-o", "ConnectTimeout=2",
-                 user_host, "echo OK"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-            )
-            QMessageBox.information(self, "SSH Test", f"Success: {proc.stdout.strip()}")
-        except subprocess.CalledProcessError as e:
-            QMessageBox.critical(self, "SSH Test Failed", e.stderr.strip())
-
-    # --------------------------------------------------
-    # Save settings when “Save” is clicked
+    # Save settings when "Save" is clicked
     # --------------------------------------------------
     def _settings_save_clicked(self):
-        # Update settings dict from UI fields
+        # Mode (cnat/cbridge)
+        self.settings["mode"] = self.mode_combo.currentText()
+
+        # SSH fields
         for node_label, (uh_edit, key_edit) in self.ssh_fields.items():
             self.settings["ssh"][node_label]["user_host"] = uh_edit.text().strip()
             self.settings["ssh"][node_label]["keyfile"] = key_edit.text().strip()
 
+        # Other settings
         self.settings["refresh_interval"] = self.refresh_spin.value()
         self.settings["theme"] = self.theme_combo.currentText()
         self.settings["led_icon_size"] = self.icon_spin.value()
@@ -715,12 +696,14 @@ class ClusterCtrlGUI(QMainWindow):
         self.settings["email_alert"] = self.email_edit.text().strip()
 
         self._save_settings()
-        QMessageBox.information(self, "Settings", "Settings saved successfully. Please restart to apply icon size and theme changes.")
+        QMessageBox.information(self, "Settings", "Settings saved. Restart to apply icon & theme changes.")
 
     # --------------------------------------------------
-    # Cancel changes and revert UI fields
+    # Cancel changes (revert UI fields)
     # --------------------------------------------------
     def _settings_cancel_clicked(self):
+        # Revert UI fields to match saved settings
+        self.mode_combo.setCurrentText(self.settings.get("mode", "cnat"))
         for node_label, (uh_edit, key_edit) in self.ssh_fields.items():
             uh_edit.setText(self.settings["ssh"][node_label]["user_host"])
             key_edit.setText(self.settings["ssh"][node_label]["keyfile"])
@@ -733,6 +716,112 @@ class ClusterCtrlGUI(QMainWindow):
         self.email_edit.setText(self.settings["email_alert"])
 
     # --------------------------------------------------
+    # Distribute SSH keys (triggered by Settings → "Distribute SSH Keys")
+    # --------------------------------------------------
+    def _distribute_ssh_keys(self):
+        """
+        For each node label (p1..p4):
+          1. Power ON that node via `clusterctrl on <label>`
+          2. Determine host from settings (mode + user_host override)
+          3. Wait up to 120 sec for SSH
+          4. Prompt for password (even if user changed default)
+          5. Run `sshpass ssh-copy-id -i <keyfile> <user@host>`
+          6. Power OFF that node via `clusterctrl off <label>`
+        """
+
+        # Ensure sshpass is available
+        if subprocess.run(["which", "sshpass"], stdout=subprocess.DEVNULL).returncode != 0:
+            QMessageBox.warning(self, "sshpass Missing", "sshpass is required to distribute SSH keys. Please install `sshpass` (sudo apt install sshpass) and try again.")
+            return
+
+        mode = self.settings.get("mode", "cnat")
+        max_wait = 120
+        interval = 5
+
+        for node_label in self.current_board_def.valid_node_labels():
+            label = node_label.lower()
+            dlg = QMessageBox(self)
+            dlg.setWindowTitle("Distribute SSH Key")
+            dlg.setText(f"Processing node {label.upper()} …")
+            dlg.setStandardButtons(QMessageBox.NoButton)
+            dlg.show()
+
+            # 1. Power ON
+            rc_on, _, err_on = run_clusterctrl_command(["on", label])
+            if rc_on != 0:
+                dlg.close()
+                QMessageBox.critical(self, "Error", f"Failed to power ON {label.upper()}: {err_on}")
+                continue
+
+            # 2. Determine host
+            default_host = self.settings["ssh"][label]["user_host"]
+            # If using CNAT, override only if user_host is empty or still default “pi@pX.local”
+            if mode == "cnat":
+                # IP range 172.19.181.1 .. 172.19.181.4
+                idx = label[1:]  # “p1” → “1”
+                cnat_host = f"pi@172.19.181.{idx}"
+                prompt, ok = QInputDialog.getText(self, "SSH Host", f"Enter SSH address for {label.upper()} (default: {cnat_host}):", text=default_host or cnat_host)
+                if not ok:
+                    dlg.close()
+                    run_clusterctrl_command(["off", label])
+                    continue
+                host = prompt.strip() or cnat_host
+            else:
+                prompt, ok = QInputDialog.getText(self, "SSH Host", f"Enter SSH address for {label.upper()} (default: {default_host}):", text=default_host)
+                if not ok:
+                    dlg.close()
+                    run_clusterctrl_command(["off", label])
+                    continue
+                host = prompt.strip() or default_host
+
+            # 3. Wait for SSH up to max_wait
+            elapsed = 0
+            while elapsed < max_wait:
+                try:
+                    # Attempt a simple “echo up”
+                    ssh_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout={interval} -i {self.settings['ssh'][label]['keyfile']} {host} echo up"
+                    completed = subprocess.run(shlex.split(ssh_cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    if completed.returncode == 0 and "up" in completed.stdout:
+                        break
+                except Exception:
+                    pass
+                time.sleep(interval)
+                elapsed += interval
+
+            if elapsed >= max_wait:
+                dlg.close()
+                QMessageBox.warning(self, "Timeout", f"{host} did not respond within {max_wait} seconds. Leaving {label.upper()} powered ON for manual setup.")
+                continue
+
+            # 4. Prompt for password
+            user = host.split("@")[0]
+            pw, ok = QInputDialog.getText(self, "SSH Password", f"Enter SSH password for {user}@{host}:", echo=QLineEdit.Password)
+            if not ok:
+                dlg.close()
+                run_clusterctrl_command(["off", label])
+                continue
+
+            # 5. Copy public key via sshpass + ssh-copy-id
+            keyfile = self.settings["ssh"][label]["keyfile"]
+            copy_cmd = f"sshpass -p {pw} ssh-copy-id -o StrictHostKeyChecking=no -i {keyfile} {host}"
+            completed = subprocess.run(shlex.split(copy_cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if completed.returncode != 0:
+                dlg.close()
+                QMessageBox.critical(self, "SSH Copy Failed", f"ssh-copy-id failed for {host}:\n{completed.stderr}")
+                run_clusterctrl_command(["off", label])
+                continue
+
+            # 6. Power OFF
+            rc_off, _, err_off = run_clusterctrl_command(["off", label])
+            dlg.close()
+            if rc_off != 0:
+                QMessageBox.warning(self, "Power Off Failed", f"Powered ON {label.upper()} successfully and copied key, but failed to power OFF: {err_off}")
+            else:
+                QMessageBox.information(self, "Success", f"SSH key distributed to {host} and {label.upper()} powered off.")
+
+        QMessageBox.information(self, "Done", "Finished distributing SSH keys (any timed‐out nodes remain powered ON).")
+
+    # --------------------------------------------------
     # Handle board selection change
     # --------------------------------------------------
     def _on_board_changed(self, index):
@@ -741,7 +830,7 @@ class ClusterCtrlGUI(QMainWindow):
             return
         self.current_board_def = bd_class
 
-        # Rebuild per-node widgets
+        # Rebuild node widgets
         self._build_node_widgets()
 
         # Enable/disable extras based on board class
@@ -765,40 +854,37 @@ class ClusterCtrlGUI(QMainWindow):
     # Create per-node LED icon + toggle button
     # --------------------------------------------------
     def _build_node_widgets(self):
-        # Clear existing
         for icon_label, toggle_btn in self.node_widgets.values():
             icon_label.setParent(None)
             toggle_btn.setParent(None)
         self.node_widgets.clear()
 
         layout = self.node_group.layout()
-        # Clear layout items
         while layout.count():
             item = layout.takeAt(0)
             w = item.widget()
             if w:
                 w.setParent(None)
 
-        # For each node, create icon + button
         labels = self.current_board_def.valid_node_labels()
         for idx, node_label in enumerate(labels):
-            row = idx // 4  # 4 per row
+            row = idx // 4
             col = (idx % 4) * 2
 
             icon_label = QLabel()
             icon_label.setAlignment(Qt.AlignCenter)
-            icon_label.setPixmap(self.icon_red)  # default off
+            icon_label.setPixmap(self.icon_red)
 
             toggle_btn = QPushButton(node_label.upper())
-            toggle_btn.clicked.connect(partial(self._toggle_node, node_label))
+            toggle_btn.clicked.connect(partial(self._toggle_node, node_label.lower()))
 
-            self.node_widgets[node_label] = (icon_label, toggle_btn)
+            self.node_widgets[node_label.lower()] = (icon_label, toggle_btn)
 
             layout.addWidget(icon_label, row * 2, col, 1, 2, alignment=Qt.AlignCenter)
             layout.addWidget(toggle_btn, row * 2 + 1, col, 1, 2)
 
     # --------------------------------------------------
-    # Toggle a node on/off based on its current state
+    # Toggle a node on/off
     # --------------------------------------------------
     def _toggle_node(self, node_label):
         status, err = parse_clusterctrl_status()
@@ -818,7 +904,7 @@ class ClusterCtrlGUI(QMainWindow):
         else:
             self._refresh_status()
             if self.settings.get("play_sound_on_off", False):
-                # Sound feedback could be implemented here
+                # Placeholder for sound
                 pass
 
     # --------------------------------------------------
@@ -885,7 +971,7 @@ class ClusterCtrlGUI(QMainWindow):
             else:
                 icon_label.setPixmap(self.icon_red)
 
-        # Update summary text
+        # Build summary
         node_states = []
         for nl in self.current_board_def.valid_node_labels():
             val = status.get(nl, "0")
@@ -997,41 +1083,29 @@ class ClusterCtrlGUI(QMainWindow):
         self._update_remote_stats()
 
     # --------------------------------------------------
-    # Perform a `git pull` in the install directory, safely handling local changes
+    # Perform a `git pull` (in-place) with safe local-changes handling
     # --------------------------------------------------
     def _perform_update(self):
         repo_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # Ensure this is a git repo
         if not os.path.isdir(os.path.join(repo_dir, ".git")):
-            QMessageBox.warning(
-                self, "Update Failed",
-                "This folder is not a Git repository.\nCannot pull updates."
-            )
+            QMessageBox.warning(self, "Update Failed", "Not a Git repository. Cannot pull updates.")
             return
 
-        # Check for local changes
         if git_has_local_changes(repo_dir):
             reply = QMessageBox.question(
                 self, "Local Changes Detected",
-                "You have uncommitted changes in the repository.\n"
-                "Updating will discard them.\n"
-                "Do you want to proceed and overwrite local changes?",
+                "You have local changes. Pulling will discard them. Proceed?",
                 QMessageBox.Yes | QMessageBox.No
             )
             if reply != QMessageBox.Yes:
                 return
-            # Discard local changes
             try:
                 subprocess.run(["git", "reset", "--hard"], cwd=repo_dir, check=True)
             except subprocess.CalledProcessError as e:
-                QMessageBox.critical(
-                    self, "Reset Failed",
-                    f"Failed to discard local changes:\n{e.stderr.strip()}"
-                )
+                QMessageBox.critical(self, "Reset Failed", f"Failed to discard changes:\n{e.stderr.strip()}")
                 return
 
-        # Now pull
         try:
             proc = subprocess.run(
                 ["git", "pull"],
@@ -1041,16 +1115,9 @@ class ClusterCtrlGUI(QMainWindow):
                 text=True,
                 check=True
             )
-            output = proc.stdout.strip()
-            QMessageBox.information(
-                self, "Update Complete",
-                f"Git pull succeeded:\n{output}"
-            )
+            QMessageBox.information(self, "Update Complete", f"Git pull succeeded:\n{proc.stdout.strip()}")
         except subprocess.CalledProcessError as e:
-            QMessageBox.critical(
-                self, "Update Error",
-                f"Git pull failed:\n{e.stderr.strip()}"
-            )
+            QMessageBox.critical(self, "Update Error", f"Git pull failed:\n{e.stderr.strip()}")
 
     # --------------------------------------------------
     # Apply a simple dark theme via stylesheet
