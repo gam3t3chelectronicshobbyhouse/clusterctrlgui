@@ -113,6 +113,10 @@ After the script completes, launch the GUI:
 cd clusterctrlgui
 ./clusterctrl_gui.py
 ```
+## Uninstall One-liner
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/gam3t3chelectronicshobbyhouse/clusterctrlgui/main/uninstall.sh)"
+```
 
 ### B) Manual (clone + install)
 
