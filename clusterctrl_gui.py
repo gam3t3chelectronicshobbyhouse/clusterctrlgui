@@ -5,15 +5,12 @@ clusterctrl_gui.py
 A PyQt5 GUI for controlling ClusterHAT/ClusterCTRL boards AND monitoring system
 health (CPU/RAM/network/temperature) locally and on each Pi node via SSH.
 
-This version adds:
-  - An “Update” button that runs `git pull` in the install directory,  
-    fetching any new files from GitHub and updating changed files.
-  - A menu bar with a “File” menu containing:
-      • “Update” (same as the Update button)
-      • “Exit”
-    (You can attach an icon to “Update” by placing a PNG at icons/update.png.)
-  - Note: The desktop‐menu launcher (“Launch”) is created via the install script
-    as a .desktop file (see install.sh), not inside the GUI itself.
+This updated version includes:
+  - Dropdown for selecting any supported board version (v2.x, v1.x, Single, Triple, A+6).
+  - Fan On/Off buttons (maps to `clusterctrl fan on` / `clusterctrl fan off`).
+  - Per-node On/Off buttons (e.g., “P1 On” / “P1 Off”, etc.) plus “All On” / “All Off”.
+  - Retains “Update from GitHub” in the File menu.
+  - System Health tab unchanged.
 """
 
 import sys
@@ -24,10 +21,10 @@ import psutil
 from functools import partial
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QComboBox, QCheckBox, QMessageBox, QGroupBox, QTabWidget,
-    QAction, QMenuBar
+    QPushButton, QComboBox, QMessageBox, QGroupBox, QTabWidget, QAction,
+    QMenuBar, QGridLayout
 )
-from PyQt5.QtGui import QIcon, QPixmap
+from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QTimer
 
 # --------------------------------------------------
@@ -36,7 +33,7 @@ from PyQt5.QtCore import Qt, QTimer
 
 def run_clusterctrl_command(args_list):
     """
-    Run a clusterctrl command, return (return_code, stdout, stderr).
+    Run a `clusterctrl` command, return (return_code, stdout, stderr).
     """
     try:
         completed = subprocess.run(
@@ -49,7 +46,6 @@ def run_clusterctrl_command(args_list):
         return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
     except FileNotFoundError:
         return -1, "", "clusterctrl not found; ensure it's installed and in PATH."
-
 
 def parse_clusterctrl_status():
     """
@@ -69,7 +65,6 @@ def parse_clusterctrl_status():
         status[key.strip()] = val.strip()
     return status, None
 
-
 # --------------------------------------------------
 # BoardDefinition classes
 # --------------------------------------------------
@@ -83,6 +78,9 @@ class BoardDefinition:
 
     @classmethod
     def valid_node_labels(cls):
+        """
+        Returns a list like ["p1","p2", ... up to supports_nodes].
+        """
         return [f"p{i}" for i in range(1, cls.supports_nodes + 1)]
 
     @classmethod
@@ -92,6 +90,14 @@ class BoardDefinition:
     @classmethod
     def command_power_off(cls, nodes):
         return ["off"] + nodes
+
+    @classmethod
+    def command_all_on(cls):
+        return ["on", "all"]
+
+    @classmethod
+    def command_all_off(cls):
+        return ["off", "all"]
 
     @classmethod
     def command_hub_on(cls):
@@ -125,6 +131,13 @@ class BoardDefinition:
     def command_wp_off(cls):
         return ["wp", "off"]
 
+    @classmethod
+    def command_fan_on(cls):
+        return ["fan", "on"]
+
+    @classmethod
+    def command_fan_off(cls):
+        return ["fan", "off"]
 
 class ClusterHATv2(BoardDefinition):
     name = "ClusterHAT v2.x"
@@ -133,14 +146,12 @@ class ClusterHATv2(BoardDefinition):
     supports_alert = True
     supports_wp = True
 
-
 class ClusterHATv1(BoardDefinition):
     name = "ClusterHAT v1.x"
     supports_nodes = 4
     supports_hub_led = False
     supports_alert = True
     supports_wp = False
-
 
 class ClusterCTRLSingle(BoardDefinition):
     name = "ClusterCTRL Single"
@@ -149,14 +160,12 @@ class ClusterCTRLSingle(BoardDefinition):
     supports_alert = False
     supports_wp = False
 
-
 class ClusterCTRLTriple(BoardDefinition):
     name = "ClusterCTRL Triple"
     supports_nodes = 3
     supports_hub_led = True
     supports_alert = True
     supports_wp = False
-
 
 class ClusterCTRLA6(BoardDefinition):
     name = "ClusterCTRL A+6"
@@ -165,6 +174,14 @@ class ClusterCTRLA6(BoardDefinition):
     supports_alert = True
     supports_wp = False
 
+# List of all supported board classes for the dropdown
+ALL_BOARDS = [
+    ClusterHATv2,
+    ClusterHATv1,
+    ClusterCTRLSingle,
+    ClusterCTRLTriple,
+    ClusterCTRLA6
+]
 
 # --------------------------------------------------
 # Main Window
@@ -174,11 +191,7 @@ class ClusterCtrlGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PiCluster Control & Monitoring")
-        self.setGeometry(100, 100, 700, 500)
-
-        # Icons for ON/OFF (16×16 PNGs)
-        self.icon_on = QIcon("icons/icon_green.png")
-        self.icon_off = QIcon("icons/icon_red.png")
+        self.setGeometry(100, 100, 800, 550)
 
         # Current board definition
         self.current_board_def = None
@@ -187,17 +200,10 @@ class ClusterCtrlGUI(QMainWindow):
         menubar = QMenuBar(self)
         file_menu = menubar.addMenu("File")
 
-        # “Update” action
-        update_icon_path = "icons/update.png"  # place a 16×16 PNG here if desired
-        if os.path.exists(update_icon_path):
-            update_icon = QIcon(update_icon_path)
-        else:
-            update_icon = QIcon()  # no icon fallback
-        update_action = QAction(update_icon, "Update from GitHub", self)
+        update_action = QAction("Update from GitHub", self)
         update_action.triggered.connect(self._perform_update)
         file_menu.addAction(update_action)
 
-        # Separator, then “Exit”
         file_menu.addSeparator()
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
@@ -213,10 +219,9 @@ class ClusterCtrlGUI(QMainWindow):
 
         # --- Control‐tab widgets ---
         self.board_combo = QComboBox()
-        self.power_on_sel_btn = QPushButton("Power ON Selected")
-        self.power_off_sel_btn = QPushButton("Power OFF Selected")
-        self.node_checkboxes = []
-        self.node_group = QGroupBox("Pi Nodes")
+        self.node_buttons = {}        # e.g. {"p1": (btn_on, btn_off), ...}
+        self.all_on_btn = QPushButton("All On")
+        self.all_off_btn = QPushButton("All Off")
         self.hub_on_btn = QPushButton("Hub ON")
         self.hub_off_btn = QPushButton("Hub OFF")
         self.led_on_btn = QPushButton("LED ON")
@@ -225,12 +230,13 @@ class ClusterCtrlGUI(QMainWindow):
         self.alert_off_btn = QPushButton("Alert OFF")
         self.wp_on_btn = QPushButton("WP ON")
         self.wp_off_btn = QPushButton("WP OFF")
+        self.fan_on_btn = QPushButton("Fan ON")
+        self.fan_off_btn = QPushButton("Fan OFF")
         self.refresh_btn = QPushButton("Refresh Status")
         self.update_btn = QPushButton("Update from GitHub")
         self.status_label = QLabel("Status: Unknown")
-        self.node_status_labels = {}
 
-        # --- Health‐tab widgets ---
+        # --- Health‐tab widgets (unchanged) ---
         self.local_cpu_lbl = QLabel("CPU Usage: N/A")
         self.local_ram_lbl = QLabel("RAM Usage: N/A")
         self.local_temp_lbl = QLabel("Temperature: N/A °C")
@@ -244,10 +250,11 @@ class ClusterCtrlGUI(QMainWindow):
         self.tabs.addTab(self.control_tab, "Control")
         self.tabs.addTab(self.health_tab, "System Health")
 
-        # Detect boards and populate dropdown
-        self._detect_and_populate_boards()
+        # Populate dropdown with all supported boards
+        for bd in ALL_BOARDS:
+            self.board_combo.addItem(bd.name, bd)
 
-        # If any board detected, select first
+        # Set initial board selection to the first
         if self.board_combo.count() > 0:
             self.board_combo.setCurrentIndex(0)
             self._on_board_changed(0)
@@ -264,18 +271,21 @@ class ClusterCtrlGUI(QMainWindow):
         hb1.addWidget(self.board_combo)
         layout.addLayout(hb1)
 
-        # Row 2: Power buttons
-        hb2 = QHBoxLayout()
-        hb2.addWidget(self.power_on_sel_btn)
-        hb2.addWidget(self.power_off_sel_btn)
-        layout.addLayout(hb2)
-
-        # Node group placeholder
-        node_layout = QHBoxLayout()
+        # Row 2: Node control grid
+        self.node_group = QGroupBox("Pi Node Controls")
+        node_layout = QGridLayout()
         self.node_group.setLayout(node_layout)
         layout.addWidget(self.node_group)
 
-        # Extras group
+        # Row 3: All On / All Off
+        hb_all = QHBoxLayout()
+        hb_all.addWidget(self.all_on_btn)
+        hb_all.addWidget(self.all_off_btn)
+        hb_all.addStretch()
+        layout.addLayout(hb_all)
+
+        # Row 4: Extras group (hub/led/alert/wp/fan)
+        extras_group = QGroupBox("Extras")
         extras_layout = QHBoxLayout()
         extras_layout.addWidget(self.hub_on_btn)
         extras_layout.addWidget(self.hub_off_btn)
@@ -285,24 +295,27 @@ class ClusterCtrlGUI(QMainWindow):
         extras_layout.addWidget(self.alert_off_btn)
         extras_layout.addWidget(self.wp_on_btn)
         extras_layout.addWidget(self.wp_off_btn)
-        layout.addLayout(extras_layout)
+        extras_layout.addWidget(self.fan_on_btn)
+        extras_layout.addWidget(self.fan_off_btn)
+        extras_group.setLayout(extras_layout)
+        layout.addWidget(extras_group)
 
-        # Row 3: Refresh + Update buttons
-        hb3 = QHBoxLayout()
-        hb3.addWidget(self.refresh_btn)
-        hb3.addWidget(self.update_btn)
-        hb3.addStretch()
-        layout.addLayout(hb3)
+        # Row 5: Refresh + Update
+        hb_refresh = QHBoxLayout()
+        hb_refresh.addWidget(self.refresh_btn)
+        hb_refresh.addWidget(self.update_btn)
+        hb_refresh.addStretch()
+        layout.addLayout(hb_refresh)
 
-        # Row 4: Status summary
+        # Row 6: Status summary
         layout.addWidget(self.status_label)
 
         self.control_tab.setLayout(layout)
 
         # Connect signals
         self.board_combo.currentIndexChanged.connect(self._on_board_changed)
-        self.power_on_sel_btn.clicked.connect(self._power_on_selected)
-        self.power_off_sel_btn.clicked.connect(self._power_off_selected)
+        self.all_on_btn.clicked.connect(self._all_on)
+        self.all_off_btn.clicked.connect(self._all_off)
         self.hub_on_btn.clicked.connect(partial(self._run_extra, "hub", "on"))
         self.hub_off_btn.clicked.connect(partial(self._run_extra, "hub", "off"))
         self.led_on_btn.clicked.connect(partial(self._run_extra, "led", "on"))
@@ -311,16 +324,17 @@ class ClusterCtrlGUI(QMainWindow):
         self.alert_off_btn.clicked.connect(partial(self._run_extra, "alert", "off"))
         self.wp_on_btn.clicked.connect(partial(self._run_extra, "wp", "on"))
         self.wp_off_btn.clicked.connect(partial(self._run_extra, "wp", "off"))
+        self.fan_on_btn.clicked.connect(partial(self._run_extra, "fan", "on"))
+        self.fan_off_btn.clicked.connect(partial(self._run_extra, "fan", "off"))
         self.refresh_btn.clicked.connect(self._refresh_status)
         self.update_btn.clicked.connect(self._perform_update)
 
     # --------------------------------------------------
-    # Build Health Tab UI
+    # Build Health Tab UI (unchanged)
     # --------------------------------------------------
     def _build_health_tab(self):
         layout = QVBoxLayout()
 
-        # Local stats group
         local_group = QGroupBox("Local Controller Pi Stats")
         local_layout = QVBoxLayout()
         local_layout.addWidget(self.local_cpu_lbl)
@@ -330,14 +344,12 @@ class ClusterCtrlGUI(QMainWindow):
         local_group.setLayout(local_layout)
         layout.addWidget(local_group)
 
-        # Remote stats group
         remote_group = QGroupBox("Remote Node Stats (via SSH)")
         remote_group.setObjectName("RemoteStatsGroup")
         remote_layout = QVBoxLayout()
         remote_group.setLayout(remote_layout)
         layout.addWidget(remote_group)
 
-        # Refresh health button
         hb = QHBoxLayout()
         hb.addWidget(self.refresh_health_btn)
         hb.addStretch()
@@ -345,53 +357,15 @@ class ClusterCtrlGUI(QMainWindow):
 
         self.health_tab.setLayout(layout)
 
-        # Timer to auto-refresh local stats every 5 seconds
         self.health_timer = QTimer()
-        self.health_timer.setInterval(5000)  # 5 seconds
+        self.health_timer.setInterval(5000)
         self.health_timer.timeout.connect(self._update_local_stats)
         self.health_timer.start()
 
-        # Manual refresh
         self.refresh_health_btn.clicked.connect(self._refresh_both_local_and_remote)
 
     # --------------------------------------------------
-    # Populate board dropdown
-    # --------------------------------------------------
-    def _detect_and_populate_boards(self):
-        status, err = parse_clusterctrl_status()
-        if err:
-            QMessageBox.critical(self, "Error", err)
-            return
-
-        detected_boards = []
-        maxpi = int(status.get("maxpi", "0"))
-
-        if status.get("hat_version_major", "") == "2":
-            detected_boards.append(ClusterHATv2)
-        elif status.get("hat_version_major", "") == "1":
-            detected_boards.append(ClusterHATv1)
-
-        if maxpi == 1:
-            detected_boards.append(ClusterCTRLSingle)
-        elif maxpi == 3:
-            detected_boards.append(ClusterCTRLTriple)
-        elif maxpi == 6:
-            detected_boards.append(ClusterCTRLA6)
-
-        if not detected_boards:
-            detected_boards = [
-                ClusterHATv2,
-                ClusterHATv1,
-                ClusterCTRLSingle,
-                ClusterCTRLTriple,
-                ClusterCTRLA6
-            ]
-
-        for bd in detected_boards:
-            self.board_combo.addItem(bd.name, bd)
-
-    # --------------------------------------------------
-    # Handle board change
+    # Handle board selection change
     # --------------------------------------------------
     def _on_board_changed(self, index):
         bd_class = self.board_combo.itemData(index)
@@ -399,39 +373,10 @@ class ClusterCtrlGUI(QMainWindow):
             return
         self.current_board_def = bd_class
 
-        # Clear existing node checkboxes/status
-        for cb in self.node_checkboxes:
-            cb.setParent(None)
-            cb.deleteLater()
-        self.node_checkboxes.clear()
-        for lbl in self.node_status_labels.values():
-            lbl.setParent(None)
-            lbl.deleteLater()
-        self.node_status_labels.clear()
+        # Rebuild per-node buttons
+        self._build_node_buttons()
 
-        # Clear node_group layout
-        node_layout = self.node_group.layout()
-        for i in reversed(range(node_layout.count())):
-            w = node_layout.itemAt(i).widget()
-            if w:
-                w.setParent(None)
-                w.deleteLater()
-
-        # Create new checkboxes & status icons
-        for node_label in bd_class.valid_node_labels():
-            cb = QCheckBox(node_label.upper())
-            self.node_checkboxes.append(cb)
-            lbl = QLabel()
-            lbl.setPixmap(self.icon_off.pixmap(16, 16))
-            lbl.setToolTip(f"{node_label.upper()} status")
-            self.node_status_labels[node_label] = lbl
-
-            v = QVBoxLayout()
-            v.addWidget(cb, alignment=Qt.AlignCenter)
-            v.addWidget(lbl, alignment=Qt.AlignCenter)
-            node_layout.addLayout(v)
-
-        # Enable/disable extras
+        # Enable/disable extras based on board class
         self.hub_on_btn.setEnabled(bd_class.supports_hub_led)
         self.hub_off_btn.setEnabled(bd_class.supports_hub_led)
         self.led_on_btn.setEnabled(bd_class.supports_hub_led)
@@ -440,103 +385,116 @@ class ClusterCtrlGUI(QMainWindow):
         self.alert_off_btn.setEnabled(bd_class.supports_alert)
         self.wp_on_btn.setEnabled(bd_class.supports_wp)
         self.wp_off_btn.setEnabled(bd_class.supports_wp)
+        # Fan always available
+        self.fan_on_btn.setEnabled(True)
+        self.fan_off_btn.setEnabled(True)
 
-        # Rebuild remote labels
-        self._build_remote_labels()
-
-        # Refresh statuses
+        # Refresh status and health
         self._refresh_status()
         self._update_local_stats()
 
     # --------------------------------------------------
-    # Recreate remote-stat labels
+    # Create per-node On/Off buttons dynamically
     # --------------------------------------------------
-    def _build_remote_labels(self):
-        # Find the remote_group
-        remote_group = None
-        for widget in self.health_tab.findChildren(QGroupBox):
-            if widget.title() == "Remote Node Stats (via SSH)":
-                remote_group = widget
-                break
-        if remote_group is None:
-            return
+    def _build_node_buttons(self):
+        # Clear existing buttons
+        for widgets in self.node_buttons.values():
+            for w in widgets:
+                w.setParent(None)
+                w.deleteLater()
+        self.node_buttons.clear()
 
-        remote_layout = remote_group.layout()
+        layout = self.node_group.layout()
+        # Clear layout items
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
 
-        # Clear existing labels
-        for lbl in self.remote_stat_labels.values():
-            lbl.setParent(None)
-            lbl.deleteLater()
-        self.remote_stat_labels.clear()
+        # For each node, add two buttons
+        labels = self.current_board_def.valid_node_labels()
+        for idx, node_label in enumerate(labels):
+            row = idx // 4  # wrap every 4 per row
+            col = (idx % 4) * 2
 
-        # Create new label per node
-        for node_label in self.current_board_def.valid_node_labels():
-            lbl = QLabel(f"{node_label.upper()}: N/A")
-            lbl.setStyleSheet("font: 12px;")
-            remote_layout.addWidget(lbl)
-            self.remote_stat_labels[node_label] = lbl
+            btn_on = QPushButton(f"{node_label.upper()} On")
+            btn_off = QPushButton(f"{node_label.upper()} Off")
+            self.node_buttons[node_label] = (btn_on, btn_off)
+
+            btn_on.clicked.connect(partial(self._node_on, node_label))
+            btn_off.clicked.connect(partial(self._node_off, node_label))
+
+            layout.addWidget(btn_on, row, col)
+            layout.addWidget(btn_off, row, col + 1)
+
+        # “All On” / “All Off” already added below node group
 
     # --------------------------------------------------
-    # Power on selected nodes
+    # Turn a single node on
     # --------------------------------------------------
-    def _power_on_selected(self):
-        if not self.current_board_def:
-            return
-        to_power = [cb.text().lower() for cb in self.node_checkboxes if cb.isChecked()]
-        if not to_power:
-            QMessageBox.warning(self, "No nodes selected", "Please check at least one node checkbox.")
-            return
-
-        args = self.current_board_def.command_power_on(to_power)
+    def _node_on(self, node_label):
+        args = ["on", node_label]
         rc, out, err = run_clusterctrl_command(args)
         if rc != 0:
-            QMessageBox.critical(self, "Error", f"Failed to power on {to_power}: {err}")
+            QMessageBox.critical(self, "Error", f"Failed to power ON {node_label.upper()}: {err}")
         else:
-            self.status_label.setText(f"Powered ON: {', '.join(to_power)}")
             self._refresh_status()
 
     # --------------------------------------------------
-    # Power off selected nodes
+    # Turn a single node off
     # --------------------------------------------------
-    def _power_off_selected(self):
-        if not self.current_board_def:
-            return
-        to_power = [cb.text().lower() for cb in self.node_checkboxes if cb.isChecked()]
-        if not to_power:
-            QMessageBox.warning(self, "No nodes selected", "Please check at least one node checkbox.")
-            return
-
-        args = self.current_board_def.command_power_off(to_power)
+    def _node_off(self, node_label):
+        args = ["off", node_label]
         rc, out, err = run_clusterctrl_command(args)
         if rc != 0:
-            QMessageBox.critical(self, "Error", f"Failed to power off {to_power}: {err}")
+            QMessageBox.critical(self, "Error", f"Failed to power OFF {node_label.upper()}: {err}")
         else:
-            self.status_label.setText(f"Powered OFF: {', '.join(to_power)}")
             self._refresh_status()
 
     # --------------------------------------------------
-    # Toggle extras (hub/led/alert/wp)
+    # Turn all nodes on
+    # --------------------------------------------------
+    def _all_on(self):
+        args = self.current_board_def.command_all_on()
+        rc, out, err = run_clusterctrl_command(args)
+        if rc != 0:
+            QMessageBox.critical(self, "Error", f"Failed to power ON all: {err}")
+        else:
+            self._refresh_status()
+
+    # --------------------------------------------------
+    # Turn all nodes off
+    # --------------------------------------------------
+    def _all_off(self):
+        args = self.current_board_def.command_all_off()
+        rc, out, err = run_clusterctrl_command(args)
+        if rc != 0:
+            QMessageBox.critical(self, "Error", f"Failed to power OFF all: {err}")
+        else:
+            self._refresh_status()
+
+    # --------------------------------------------------
+    # Toggle extras (hub/led/alert/wp/fan)
     # --------------------------------------------------
     def _run_extra(self, extra, state):
-        if not self.current_board_def:
-            return
-        attr_map = {
+        # Validate support
+        support_map = {
             "hub": self.current_board_def.supports_hub_led,
             "led": self.current_board_def.supports_hub_led,
             "alert": self.current_board_def.supports_alert,
-            "wp": self.current_board_def.supports_wp
+            "wp": self.current_board_def.supports_wp,
+            "fan": True
         }
-        if not attr_map.get(extra, False):
-            QMessageBox.warning(self, "Unsupported",
-                                 f"{self.current_board_def.name} does not support '{extra}' control.")
+        if not support_map.get(extra, False):
+            QMessageBox.warning(self, "Unsupported", f"{self.current_board_def.name} does not support '{extra}' control.")
             return
-
         args = [extra, state]
         rc, out, err = run_clusterctrl_command(args)
         if rc != 0:
             QMessageBox.critical(self, "Error", f"Failed to run 'clusterctrl {extra} {state}': {err}")
         else:
-            self.status_label.setText(f"Ran: clusterctrl {extra} {state}")
             self._refresh_status()
 
     # --------------------------------------------------
@@ -548,46 +506,28 @@ class ClusterCtrlGUI(QMainWindow):
             QMessageBox.critical(self, "Error", err)
             return
 
-        # Node icons
-        for node_label, lbl in self.node_status_labels.items():
-            val = status.get(node_label, "0")
-            if val == "1":
-                lbl.setPixmap(self.icon_on.pixmap(16, 16))
-                lbl.setToolTip(f"{node_label.upper()}: ON")
-            else:
-                lbl.setPixmap(self.icon_off.pixmap(16, 16))
-                lbl.setToolTip(f"{node_label.upper()}: OFF")
-
-        # Extras
-        if self.current_board_def.supports_hub_led:
-            hub_val = status.get("hub", "0")
-            self.hub_on_btn.setEnabled(hub_val == "0")
-            self.hub_off_btn.setEnabled(hub_val == "1")
-            led_val = status.get("led", "0")
-            self.led_on_btn.setEnabled(led_val == "0")
-            self.led_off_btn.setEnabled(led_val == "1")
-        if self.current_board_def.supports_alert:
-            alert_val = status.get("hat_alert", status.get("alert", "0"))
-            self.alert_on_btn.setEnabled(alert_val == "0")
-            self.alert_off_btn.setEnabled(alert_val == "1")
-        if self.current_board_def.supports_wp:
-            wp_val = status.get("wp", "0")
-            self.wp_on_btn.setEnabled(wp_val == "0")
-            self.wp_off_btn.setEnabled(wp_val == "1")
-
-        # Summary
+        # Build summary line
         node_states = []
         for nl in self.current_board_def.valid_node_labels():
-            st = status.get(nl, "0")
-            node_states.append(f"{nl.upper()}={'ON' if st=='1' else 'OFF'}")
+            val = status.get(nl, "0")
+            node_states.append(f"{nl.upper()}={'ON' if val=='1' else 'OFF'}")
+
         extras_states = []
         if self.current_board_def.supports_hub_led:
-            extras_states.append(f"HUB={'ON' if status.get('hub','0')=='1' else 'OFF'}")
-            extras_states.append(f"LED={'ON' if status.get('led','0')=='1' else 'OFF'}")
+            hub_val = status.get("hub", "0")
+            extras_states.append(f"HUB={'ON' if hub_val=='1' else 'OFF'}")
+            led_val = status.get("led", "0")
+            extras_states.append(f"LED={'ON' if led_val=='1' else 'OFF'}")
         if self.current_board_def.supports_alert:
-            extras_states.append(f"ALERT={'ON' if status.get('hat_alert', status.get('alert','0'))=='1' else 'OFF'}")
+            alert_val = status.get("hat_alert", status.get("alert", "0"))
+            extras_states.append(f"ALERT={'ON' if alert_val=='1' else 'OFF'}")
         if self.current_board_def.supports_wp:
-            extras_states.append(f"WP={'ON' if status.get('wp','0')=='1' else 'OFF'}")
+            wp_val = status.get("wp", "0")
+            extras_states.append(f"WP={'ON' if wp_val=='1' else 'OFF'}")
+        # Fan state
+        fan_val = status.get("fan", None)
+        if fan_val is not None:
+            extras_states.append(f"FAN={'ON' if fan_val=='1' else 'OFF'}")
 
         summary = " | ".join(node_states + extras_states)
         self.status_label.setText(f"Status: {summary}")
@@ -601,7 +541,7 @@ class ClusterCtrlGUI(QMainWindow):
 
         vm = psutil.virtual_memory()
         self.local_ram_lbl.setText(
-            f"RAM Usage: {vm.percent:.1f}% ({vm.used//(1024**2)} MiB used of {vm.total//(1024**2)} MiB)"
+            f"RAM Usage: {vm.percent:.1f}% ({vm.used//(1024**2)} MiB of {vm.total//(1024**2)} MiB)"
         )
 
         try:
@@ -680,21 +620,14 @@ class ClusterCtrlGUI(QMainWindow):
     # Perform a `git pull` in the install directory
     # --------------------------------------------------
     def _perform_update(self):
-        """
-        Runs `git pull` in the directory where this script resides.
-        On success, shows a message. On failure, shows the error.
-        """
         repo_dir = os.path.dirname(os.path.abspath(__file__))
-        # Ensure it’s actually a git repo
         if not os.path.isdir(os.path.join(repo_dir, ".git")):
             QMessageBox.warning(
                 self, "Update Failed",
-                "This folder is not a Git repository.\n"
-                "Cannot pull updates."
+                "This folder is not a Git repository.\nCannot pull updates."
             )
             return
 
-        # Run git pull
         try:
             proc = subprocess.run(
                 ["git", "pull"],
@@ -715,16 +648,15 @@ class ClusterCtrlGUI(QMainWindow):
                 f"Git pull failed:\n{e.stderr.strip()}"
             )
 
-
 # --------------------------------------------------
 # Main entrypoint
 # --------------------------------------------------
+
 def main():
     app = QApplication(sys.argv)
     window = ClusterCtrlGUI()
     window.show()
     sys.exit(app.exec_())
-
 
 if __name__ == "__main__":
     main()
