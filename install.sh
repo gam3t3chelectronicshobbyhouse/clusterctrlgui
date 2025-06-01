@@ -2,7 +2,8 @@
 #
 # install.sh
 # Installs ClusterCTRL GUI & System Health Monitor, sets up SSH keys,
-# powers on all Pi nodes and fan before distributing keys, then powers them off.
+# powers on all Pi nodes and fan before distributing keys (waiting up to 2 minutes for each to boot),
+# then powers them off.
 #
 
 set -e
@@ -15,6 +16,9 @@ DESKTOP_FILE="$LOCAL_APPS_DIR/clusterctrlgui.desktop"
 SSH_KEY="$HOME/.ssh/id_rsa"
 SSH_PUB="$HOME/.ssh/id_rsa.pub"
 NODE_HOSTS=( "pi@p1.local" "pi@p2.local" "pi@p3.local" "pi@p4.local" "pi@p5.local" "pi@p6.local" )
+SSH_TIMEOUT=5       # seconds per SSH attempt
+MAX_WAIT=120        # maximum seconds to wait per host
+SLEEP_INTERVAL=5    # seconds between attempts
 
 echo "=== Installing ClusterCTRL GUI ==="
 
@@ -56,11 +60,30 @@ echo
 echo "=== Powering ON all Pi nodes and fan ==="
 clusterctrl on all || echo "Warning: 'clusterctrl on all' may have failed (check your setup)."
 clusterctrl fan on || echo "Warning: 'clusterctrl fan on' may have failed."
-echo "Waiting 30 seconds for nodes to boot up..."
-sleep 30
-
-# 7. Distribute public key to each Pi node
+echo "Waiting up to $MAX_WAIT seconds for each node to become reachable over SSH..."
 echo
+
+# 7. Wait for each Pi node to boot and accept SSH
+for HOST in "${NODE_HOSTS[@]}"; do
+  echo -n "Waiting for $HOST to respond to SSH... "
+  elapsed=0
+  while [ $elapsed -lt $MAX_WAIT ]; do
+    if ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=$SSH_TIMEOUT "$HOST" "echo up" >/dev/null 2>&1; then
+      echo "OK"
+      break
+    else
+      echo -n "."
+      sleep $SLEEP_INTERVAL
+      elapsed=$((elapsed + SLEEP_INTERVAL))
+    fi
+  done
+  if [ $elapsed -ge $MAX_WAIT ]; then
+    echo "Timed out after $MAX_WAIT seconds (skipping $HOST)."
+  fi
+done
+echo
+
+# 8. Distribute public key to each Pi node
 echo "=== Distributing SSH public key to Pi nodes ==="
 for HOST in "${NODE_HOSTS[@]}"; do
   echo -n "Attempting to copy key to $HOST... "
@@ -73,13 +96,13 @@ done
 echo "=== SSH setup complete ==="
 echo
 
-# 8. Power OFF all Pi nodes and turn OFF fan
+# 9. Power OFF all Pi nodes and turn OFF fan
 echo "=== Powering OFF all Pi nodes and fan ==="
 clusterctrl off all || echo "Warning: 'clusterctrl off all' may have failed."
 clusterctrl fan off || echo "Warning: 'clusterctrl fan off' may have failed."
 echo
 
-# 9. Strip ICC profiles from icons (to suppress libpng warnings)
+# 10. Strip ICC profiles from icons (to suppress libpng warnings)
 if command -v mogrify >/dev/null 2>&1; then
   echo "Stripping ICC profiles from PNG icons with mogrify..."
   mogrify -strip "$INSTALL_DIR/icons/"*.png
@@ -92,11 +115,11 @@ else
   echo "Neither mogrify nor pngcrush installed—skipping icon stripping. You may still see libpng warnings."
 fi
 
-# 10. Make main script executable
+# 11. Make main script executable
 echo "Making clusterctrl_gui.py executable..."
 chmod +x "$INSTALL_DIR/clusterctrl_gui.py"
 
-# 11. Create desktop entry in ~/.local/share/applications
+# 12. Create desktop entry in ~/.local/share/applications
 echo "Creating desktop launcher at $DESKTOP_FILE..."
 mkdir -p "$LOCAL_APPS_DIR"
 
@@ -113,12 +136,12 @@ EOF
 
 chmod +x "$DESKTOP_FILE"
 
-# 12. Inform user
+# 13. Inform user
 echo
 echo "Installation complete!"
 echo
-echo "• All Pi nodes and fan were powered on briefly to distribute SSH keys, then powered off."
-echo "• SSH keys have been copied (where possible). If any node was unreachable, adjust credentials in Settings."
+echo "• All Pi nodes and fan were powered on, SSH keys distributed (where possible), then powered off."
+echo "• If any node was unreachable, you can adjust credentials in Settings."
 echo "• A desktop shortcut is available in your application menu as “ClusterCTRL GUI.”"
 echo "  If it doesn’t appear, try logging out/in or running:"
 echo "      update-desktop-database ~/.local/share/applications"
