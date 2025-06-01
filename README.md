@@ -1,3 +1,5 @@
+# Currently not usable working on getting it going soon bunch of changes coming after bugs are fixed
+
 # ClusterCTRL GUI & System Health Monitor
 
 A PyQt5 application that:
