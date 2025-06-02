@@ -5,26 +5,10 @@ clusterctrl_gui.py
 A PyQt5 GUI for controlling ClusterHAT/ClusterCTRL boards AND monitoring system
 health (CPU/RAM/network/temperature) locally and on each Pi node via SSH.
 
-Features:
-  - Control Tab: select board version, toggle nodes with LED icons, "All On/All Off",
-    extras (Hub, LED, Alert, WP, Fan), and status summary.
-  - System Health Tab: local CPU/RAM/Temp/Network + remote node stats via SSH.
-  - Help Tab: usage instructions.
-  - Settings Tab:
-      • Pick CNAT or CBRIDGE mode (affects default host/IP for p1…p4).
-      • For each node (p1…p4), specify:
-          – Username@Host
-          – Keyfile path
-          – Password (masked)
-          – A “Distribute” button that:
-              1. Powers ON that node (clusterctrl on <label>)
-              2. Waits up to 120 s for SSH (poll every 5 s)
-              3. Uses sshpass + ssh-copy-id to install public key
-              4. Powers OFF that node
-      • Other settings: refresh interval, theme, LED icon size, sounds, CPU‐alert threshold, email address.
-  - At startup, ensures ~/.ssh/ exists (so “Keyfile” fields default to ~/.ssh/id_rsa).
-  - “Update from GitHub” under File menu with safe handling of local changes.
-  - Strips ICC profiles from icons before packaging (via installer), so Qt/libpng warnings are suppressed.
+Key changes:
+  - The “Distribute SSH Key” per-node button now uses a non-blocking QProgressDialog
+    + Polls SSH via QTimer rather than freezing on a modal QMessageBox.
+  - Everything else remains as before: Control/Health/Help/Settings tabs, etc.
 """
 
 import sys
@@ -40,7 +24,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QMessageBox, QGroupBox, QTabWidget,
     QAction, QMenuBar, QTextEdit, QSpacerItem, QSizePolicy, QLineEdit,
-    QFileDialog, QSpinBox, QCheckBox, QInputDialog
+    QFileDialog, QSpinBox, QCheckBox, QInputDialog, QProgressDialog
 )
 from PyQt5.QtGui import QPixmap, QDesktopServices
 from PyQt5.QtCore import Qt, QTimer, QUrl
@@ -373,7 +357,7 @@ class ClusterCtrlGUI(QMainWindow):
             # Ensure all SSH entries exist
             for nl, creds in default["ssh"].items():
                 if nl not in loaded["ssh"]:
-                    loaded["ssh"][l] = creds
+                    loaded["ssh"][nl] = creds
             return loaded
         except Exception:
             return default
@@ -532,14 +516,14 @@ class ClusterCtrlGUI(QMainWindow):
       <li>A <strong>“Distribute”</strong> button that:
         <ol>
           <li>Powers ON that node (clusterctrl on &lt;label&gt;).</li>
-          <li>Waits up to 120 s for SSH to respond.</li>
+          <li>Waits up to 120 s for SSH to respond (non-blocking).</li>
           <li>Uses sshpass + ssh-copy-id to install your public key.</li>
           <li>Powers OFF that node.</li>
         </ol>
       </li>
     </ul>
   </li>
-  <li>Adjust auto-refresh interval, theme (light/dark), LED icon size, sound toggles, CPU-alert threshold, email address.</li>
+  <li>Adjust auto-refresh interval, theme (light/dark), LED icon size, sound toggles, CPU‐alert threshold, email address.</li>
 </ul>
 """
         text_edit = QTextEdit()
@@ -549,7 +533,7 @@ class ClusterCtrlGUI(QMainWindow):
         self.help_tab.setLayout(layout)
 
     # --------------------------------------------------
-    # Build Settings Tab UI (updated)
+    # Build Settings Tab UI (updated for per-node “Distribute”)
     # --------------------------------------------------
     def _build_settings_tab(self):
         layout = QVBoxLayout()
@@ -736,28 +720,29 @@ class ClusterCtrlGUI(QMainWindow):
         self.email_edit.setText(self.settings["email_alert"])
 
     # --------------------------------------------------
-    # Distribute SSH key for a single node (node_label)
+    # Distribute SSH key for a single node (non-blocking)
     # --------------------------------------------------
     def _distribute_ssh_key_for_node(self, node_label):
         """
         Steps for a single node (e.g. "p1"):
           1. Read User@Host + Keyfile + Password from UI
           2. Power ON that node (clusterctrl on <label>)
-          3. Wait up to 120 s, polling SSH until it responds
-          4. Run sshpass + ssh-copy-id to copy the public key to host
+          3. Wait up to 120 s, polling SSH until it responds (via QTimer)
+          4. Run sshpass + ssh-copy-id to copy the public key
           5. Power OFF that node (clusterctrl off <label>)
         """
+
         # Extract fields
         uh_edit, kf_edit, pw_edit, dist_btn = self.ssh_fields[node_label]
         user_host = uh_edit.text().strip()
         keyfile = kf_edit.text().strip()
-        password = pw_edit.text()  # may be empty if they intend to use key or passwordless
+        password = pw_edit.text()  # may be empty if they intend to use passwordless
 
         if not user_host or not keyfile:
             QMessageBox.warning(self, "Missing Info", f"Please specify User@Host and Keyfile for {node_label.upper()}.")
             return
 
-        # 0. Check for sshpass
+        # Check for sshpass
         if subprocess.run(["which", "sshpass"], stdout=subprocess.DEVNULL).returncode != 0:
             QMessageBox.warning(self, "sshpass Missing", "sshpass is required to distribute SSH keys. Please install it (`sudo apt install sshpass`) first.")
             return
@@ -768,37 +753,63 @@ class ClusterCtrlGUI(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to power ON {node_label.upper()}: {err_on}")
             return
 
-        # 2. Wait up to 120 seconds for SSH
-        max_wait = 120
-        interval = 5
-        elapsed = 0
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Distribute SSH Key")
-        msg.setText(f"Waiting for {user_host} to respond (up to {max_wait} s)…")
-        msg.setStandardButtons(QMessageBox.NoButton)
-        msg.show()
+        # 2. Prepare a QProgressDialog to show progress and allow cancellation
+        progress = QProgressDialog(f"Waiting for {user_host} to respond (up to 120 s)...",
+                                   "Cancel", 0, 120, self)
+        progress.setWindowTitle("Distribute SSH Key")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.show()
 
-        while elapsed < max_wait:
+        # Internal state for polling
+        self._ssh_elapsed = 0
+        self._ssh_timer = QTimer(self)
+        self._ssh_timer.setInterval(1000)  # check once per second
+
+        def poll_ssh():
+            if progress.wasCanceled():
+                # User clicked Cancel → stop polling, leave node ON for manual fix
+                self._ssh_timer.stop()
+                progress.close()
+                QMessageBox.information(self, "Canceled", f"Operation canceled. {node_label.upper()} remains powered ON.")
+                return
+
+            # Try a single SSH check
             try:
-                ssh_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout={interval} -i {keyfile} {user_host} echo up"
-                completed = subprocess.run(shlex.split(ssh_cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                ssh_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=1 -i {keyfile} {user_host} echo up"
+                completed = subprocess.run(shlex.split(ssh_cmd),
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 if completed.returncode == 0 and "up" in completed.stdout:
-                    break
+                    # SSH is up → stop timer and proceed to copy key
+                    self._ssh_timer.stop()
+                    progress.setValue(self._ssh_elapsed)
+                    progress.close()
+                    self._copy_key_and_power_off(node_label, user_host, keyfile, password)
+                    return
             except Exception:
                 pass
-            time.sleep(interval)
-            elapsed += interval
 
-        msg.close()
+            self._ssh_elapsed += 1
+            progress.setValue(self._ssh_elapsed)
+            if self._ssh_elapsed >= 120:
+                # Timeout reached
+                self._ssh_timer.stop()
+                progress.close()
+                QMessageBox.warning(
+                    self, "Timeout",
+                    f"{user_host} did not respond within 120 seconds.\n"
+                    f"{node_label.upper()} remains powered ON for manual setup."
+                )
 
-        if elapsed >= max_wait:
-            QMessageBox.warning(
-                self, "Timeout",
-                f"{user_host} did not respond within {max_wait} seconds.\n"
-                f"{node_label.upper()} remains powered ON for manual setup."
-            )
-            return
+        # Start polling
+        self._ssh_timer.timeout.connect(poll_ssh)
+        self._ssh_timer.start()
 
+    # --------------------------------------------------
+    # After SSH is up, copy key and power off
+    # --------------------------------------------------
+    def _copy_key_and_power_off(self, node_label, user_host, keyfile, password):
         # 3. Copy public key using sshpass + ssh-copy-id
         copy_cmd = f"sshpass -p {password} ssh-copy-id -o StrictHostKeyChecking=no -i {keyfile} {user_host}"
         proc = subprocess.run(shlex.split(copy_cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -807,7 +818,6 @@ class ClusterCtrlGUI(QMainWindow):
                 self, "SSH Copy Failed",
                 f"Failed to copy SSH key to {user_host}:\n{proc.stderr.strip()}"
             )
-            # Leave node powered on for manual fix
             return
 
         # 4. Power OFF
@@ -821,7 +831,7 @@ class ClusterCtrlGUI(QMainWindow):
             QMessageBox.information(self, "Success", f"SSH key copied to {user_host} and {node_label.upper()} powered OFF.")
 
         # Clear just the password field
-        pw_edit.clear()
+        self.ssh_fields[node_label][2].clear()
 
     # --------------------------------------------------
     # Handle board selection change
