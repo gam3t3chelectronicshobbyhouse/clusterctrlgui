@@ -18,10 +18,10 @@ Features:
       • Settings (where SSH credentials & key‐distribution live)
   - Settings:
       • Pick CNAT or CBRIDGE mode (affects default hostnames/IPs for Pi Zeros).
-      • Configure SSH user@host & keyfile per node (p1…p4).
+      • Configure SSH Username@Host & Keyfile for each node (p1…p4).
       • Button to "Distribute SSH Keys" (powers on each node, waits for SSH, copies key, powers off).
       • Refresh interval, theme, icon size, notifications, etc.
-  - Strips ICC profiles from icons at startup if needed (avoids libpng warnings).
+  - At startup, ensures ~/.ssh/ exists (so Settings can read/write keyfile paths safely).
 """
 
 import sys
@@ -215,6 +215,12 @@ class ClusterCtrlGUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("PiCluster Control & Monitoring")
         self.setGeometry(100, 100, 900, 600)
+
+        # 1. Ensure ~/.ssh/ exists (so Settings can reference it safely)
+        ssh_dir = os.path.expanduser("~/.ssh")
+        if not os.path.isdir(ssh_dir):
+            os.makedirs(ssh_dir, exist_ok=True)
+            os.chmod(ssh_dir, 0o700)
 
         # Path to config file
         self.config_path = os.path.expanduser("~/.config/clusterctrlgui/config.json")
@@ -476,7 +482,7 @@ class ClusterCtrlGUI(QMainWindow):
 
         self.health_tab.setLayout(layout)
 
-        # Auto-refresh local stats at configured interval
+        # Auto-refresh local stats
         self.health_timer = QTimer()
         self.health_timer.setInterval(self.settings.get("refresh_interval", 5) * 1000)
         self.health_timer.timeout.connect(self._update_local_stats)
@@ -493,46 +499,36 @@ class ClusterCtrlGUI(QMainWindow):
 <h2>How to Use PiCluster Control</h2>
 <p><strong>Control Tab:</strong></p>
 <ul>
-  <li>Select your board version from the dropdown (e.g., ClusterHAT v2.x).</li>
-  <li>Each Pi node has a toggle button with a colored LED icon above it:
+  <li>Select your board version (e.g., ClusterHAT v2.x).</li>
+  <li>Each Pi node has a toggle button with a colored LED icon above:
     <ul>
       <li><span style="color:green;">●</span> Green: ON</li>
       <li><span style="color:red;">●</span> Red: OFF</li>
     </ul>
   </li>
-  <li>Click the node button to toggle power on/off.</li>
-  <li>Use <em>All On</em> / <em>All Off</em> to power all nodes at once.</li>
-  <li>Extras panel:
-    <ul>
-      <li><em>Hub ON/OFF</em> (if supported)</li>
-      <li><em>LED ON/OFF</em> (if supported)</li>
-      <li><em>Alert ON/OFF</em> (if supported)</li>
-      <li><em>WP ON/OFF</em> (if supported)</li>
-      <li><em>Fan ON/OFF</em></li>
-    </ul>
-  </li>
-  <li>Click <em>Refresh Status</em> to update icons and the status summary.</li>
+  <li>Click a node to turn it ON/OFF.</li>
+  <li>Use <em>All On</em> / <em>All Off</em> to power every node at once.</li>
+  <li>Extras panel (Hub/LED/Alert/WP/Fan) if supported.</li>
+  <li>Click <em>Refresh Status</em> to update icons and summary below.</li>
 </ul>
 
 <p><strong>System Health Tab:</strong></p>
 <ul>
-  <li>Shows CPU, RAM, Temperature, and Network I/O of the controller Pi (auto-refresh every N sec).</li>
-  <li>Shows CPU, RAM, Temp, and Network I/O of each node (via SSH).</li>
-  <li>Ensure SSH credentials are correct in <strong>Settings → SSH Credentials</strong>.</li>
+  <li>Shows CPU, RAM, Temp, and Network I/O of the controller Pi (auto-refresh every N sec).</li>
+  <li>Shows CPU, RAM, Temp, and Network I/O of each node (via SSH). Ensure SSH is set up in <strong>Settings</strong>.</li>
 </ul>
 
 <p><strong>Settings Tab:</strong></p>
 <ul>
-  <li>Select <em>CNAT</em> or <em>CBRIDGE</em> mode (affects default IP/hostname for each Pi Zero).</li>
-  <li>Configure SSH <strong>Username@Host</strong> and <strong>Keyfile</strong> for each node (p1–p4).  
-      You can override the defaults if you’ve changed your Pi’s hostname or IP or login user.</li>
+  <li>Select <em>CNAT</em> or <em>CBRIDGE</em> mode (affects default hostnames/IPs for Pi Zeros).</li>
+  <li>Configure SSH <strong>Username@Host</strong> and <strong>Keyfile</strong> for each node (p1–p4).</li>
   <li>Click <strong>Distribute SSH Keys</strong> to automatically:
     <ol>
-      <li>Power ON each node one at a time</li>
-      <li>Wait up to 120 s for it to become reachable via SSH</li>
-      <li>Prompt you for that node’s password (even if you changed it)</li>
-      <li>Copy your public key via sshpass → ssh-copy-id</li>
-      <li>Power OFF the node and move to the next</li>
+      <li>Power ON each node one at a time (via clusterctrl).</li>
+      <li>Wait up to 120 s for SSH to respond.</li>
+      <li>Prompt you for that node’s SSH password.</li>
+      <li>Use sshpass + ssh-copy-id to install your public key.</li>
+      <li>Power OFF the node and move on.</li>
     </ol>
   </li>
   <li>Adjust auto-refresh interval, theme (light/dark), LED icon size, and other options.</li>
@@ -545,12 +541,12 @@ class ClusterCtrlGUI(QMainWindow):
         self.help_tab.setLayout(layout)
 
     # --------------------------------------------------
-    # Build Settings Tab UI (modified)  
+    # Build Settings Tab UI (updated)
     # --------------------------------------------------
     def _build_settings_tab(self):
         layout = QVBoxLayout()
 
-        # 1. CNAT / CBRIDGE Mode selection
+        # 1. CNAT / CBRIDGE mode
         mode_row = QHBoxLayout()
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["cnat", "cbridge"])
@@ -560,7 +556,7 @@ class ClusterCtrlGUI(QMainWindow):
         mode_row.addStretch()
         layout.addLayout(mode_row)
 
-        # 2. SSH Credentials for each node
+        # 2. SSH credentials per node
         ssh_group = QGroupBox("SSH Credentials")
         ssh_layout = QVBoxLayout()
         ssh_group.setLayout(ssh_layout)
@@ -572,7 +568,6 @@ class ClusterCtrlGUI(QMainWindow):
             user_host_edit = QLineEdit(self.settings["ssh"][node_label]["user_host"])
             keyfile_edit = QLineEdit(self.settings["ssh"][node_label]["keyfile"])
             browse_btn = QPushButton("Browse…")
-
             browse_btn.clicked.connect(lambda _, nl=node_label: self._browse_keyfile(nl))
 
             row.addWidget(QLabel(node_label.upper() + ":"))
@@ -643,14 +638,13 @@ class ClusterCtrlGUI(QMainWindow):
         email_row = QHBoxLayout()
         self.email_edit = QLineEdit(self.settings.get("email_alert", ""))
         self.test_email_btn = QPushButton("Test Email")
-        # Placeholder for actual email testing logic
         self.test_email_btn.clicked.connect(lambda: QMessageBox.information(self, "Test Email", "Email test not implemented."))
         email_row.addWidget(QLabel("Email for alerts:"))
         email_row.addWidget(self.email_edit)
         email_row.addWidget(self.test_email_btn)
         layout.addLayout(email_row)
 
-        # 10. Spacer and Save/Cancel
+        # 10. Spacer + Save/Cancel
         layout.addStretch()
         btn_row = QHBoxLayout()
         save_btn = QPushButton("Save")
@@ -676,7 +670,7 @@ class ClusterCtrlGUI(QMainWindow):
             self.ssh_fields[node_label][1].setText(path)
 
     # --------------------------------------------------
-    # Save settings when "Save" is clicked
+    # Save settings when “Save” is clicked
     # --------------------------------------------------
     def _settings_save_clicked(self):
         # Mode (cnat/cbridge)
@@ -702,7 +696,6 @@ class ClusterCtrlGUI(QMainWindow):
     # Cancel changes (revert UI fields)
     # --------------------------------------------------
     def _settings_cancel_clicked(self):
-        # Revert UI fields to match saved settings
         self.mode_combo.setCurrentText(self.settings.get("mode", "cnat"))
         for node_label, (uh_edit, key_edit) in self.ssh_fields.items():
             uh_edit.setText(self.settings["ssh"][node_label]["user_host"])
@@ -723,8 +716,8 @@ class ClusterCtrlGUI(QMainWindow):
         For each node label (p1..p4):
           1. Power ON that node via `clusterctrl on <label>`
           2. Determine host from settings (mode + user_host override)
-          3. Wait up to 120 sec for SSH
-          4. Prompt for password (even if user changed default)
+          3. Wait up to 120 s for SSH
+          4. Prompt for password
           5. Run `sshpass ssh-copy-id -i <keyfile> <user@host>`
           6. Power OFF that node via `clusterctrl off <label>`
         """
@@ -755,19 +748,25 @@ class ClusterCtrlGUI(QMainWindow):
 
             # 2. Determine host
             default_host = self.settings["ssh"][label]["user_host"]
-            # If using CNAT, override only if user_host is empty or still default “pi@pX.local”
             if mode == "cnat":
-                # IP range 172.19.181.1 .. 172.19.181.4
-                idx = label[1:]  # “p1” → “1”
+                idx = label[1:]
                 cnat_host = f"pi@172.19.181.{idx}"
-                prompt, ok = QInputDialog.getText(self, "SSH Host", f"Enter SSH address for {label.upper()} (default: {cnat_host}):", text=default_host or cnat_host)
+                prompt, ok = QInputDialog.getText(
+                    self, "SSH Host",
+                    f"Enter SSH address for {label.upper()} (default: {cnat_host}):",
+                    text=default_host or cnat_host
+                )
                 if not ok:
                     dlg.close()
                     run_clusterctrl_command(["off", label])
                     continue
                 host = prompt.strip() or cnat_host
             else:
-                prompt, ok = QInputDialog.getText(self, "SSH Host", f"Enter SSH address for {label.upper()} (default: {default_host}):", text=default_host)
+                prompt, ok = QInputDialog.getText(
+                    self, "SSH Host",
+                    f"Enter SSH address for {label.upper()} (default: {default_host}):",
+                    text=default_host
+                )
                 if not ok:
                     dlg.close()
                     run_clusterctrl_command(["off", label])
@@ -778,7 +777,6 @@ class ClusterCtrlGUI(QMainWindow):
             elapsed = 0
             while elapsed < max_wait:
                 try:
-                    # Attempt a simple “echo up”
                     ssh_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout={interval} -i {self.settings['ssh'][label]['keyfile']} {host} echo up"
                     completed = subprocess.run(shlex.split(ssh_cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                     if completed.returncode == 0 and "up" in completed.stdout:
@@ -790,24 +788,34 @@ class ClusterCtrlGUI(QMainWindow):
 
             if elapsed >= max_wait:
                 dlg.close()
-                QMessageBox.warning(self, "Timeout", f"{host} did not respond within {max_wait} seconds. Leaving {label.upper()} powered ON for manual setup.")
+                QMessageBox.warning(
+                    self, "Timeout",
+                    f"{host} did not respond within {max_wait} seconds. Leaving {label.upper()} powered ON for manual setup."
+                )
                 continue
 
             # 4. Prompt for password
             user = host.split("@")[0]
-            pw, ok = QInputDialog.getText(self, "SSH Password", f"Enter SSH password for {user}@{host}:", echo=QLineEdit.Password)
+            pw, ok = QInputDialog.getText(
+                self, "SSH Password",
+                f"Enter SSH password for {user}@{host}:",
+                echo=QLineEdit.Password
+            )
             if not ok:
                 dlg.close()
                 run_clusterctrl_command(["off", label])
                 continue
 
-            # 5. Copy public key via sshpass + ssh-copy-id
+            # 5. Copy public key
             keyfile = self.settings["ssh"][label]["keyfile"]
             copy_cmd = f"sshpass -p {pw} ssh-copy-id -o StrictHostKeyChecking=no -i {keyfile} {host}"
             completed = subprocess.run(shlex.split(copy_cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if completed.returncode != 0:
                 dlg.close()
-                QMessageBox.critical(self, "SSH Copy Failed", f"ssh-copy-id failed for {host}:\n{completed.stderr}")
+                QMessageBox.critical(
+                    self, "SSH Copy Failed",
+                    f"ssh-copy-id failed for {host}:\n{completed.stderr}"
+                )
                 run_clusterctrl_command(["off", label])
                 continue
 
@@ -815,9 +823,15 @@ class ClusterCtrlGUI(QMainWindow):
             rc_off, _, err_off = run_clusterctrl_command(["off", label])
             dlg.close()
             if rc_off != 0:
-                QMessageBox.warning(self, "Power Off Failed", f"Powered ON {label.upper()} successfully and copied key, but failed to power OFF: {err_off}")
+                QMessageBox.warning(
+                    self, "Power Off Failed",
+                    f"{label.upper()} powered ON and key copied, but failed to power OFF: {err_off}"
+                )
             else:
-                QMessageBox.information(self, "Success", f"SSH key distributed to {host} and {label.upper()} powered off.")
+                QMessageBox.information(
+                    self, "Success",
+                    f"SSH key distributed to {host} and {label.upper()} powered OFF."
+                )
 
         QMessageBox.information(self, "Done", "Finished distributing SSH keys (any timed‐out nodes remain powered ON).")
 
@@ -1083,7 +1097,7 @@ class ClusterCtrlGUI(QMainWindow):
         self._update_remote_stats()
 
     # --------------------------------------------------
-    # Perform a `git pull` (in-place) with safe local-changes handling
+    # Perform a `git pull` with safe local-changes handling
     # --------------------------------------------------
     def _perform_update(self):
         repo_dir = os.path.dirname(os.path.abspath(__file__))
